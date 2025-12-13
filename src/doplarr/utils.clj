@@ -30,6 +30,7 @@
        :as :json-string-keys
        :coerce :always
        :async? true
+       :version :http-1.1
        :headers {"X-API-Key" key}}
       params)
      put
