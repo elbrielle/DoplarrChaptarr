@@ -3,9 +3,14 @@ FROM clojure:tools-deps as builder
 WORKDIR /src
 
 COPY  ./deps.edn ./
+COPY ./build/ /src/build/
+COPY ./src/ /src/src/
 
 # Download deps
 RUN clojure -P
+
+# Download deps for build alias
+RUN clojure -P -T:build
 
 # Build uberjar
 RUN clj -T:build uber
