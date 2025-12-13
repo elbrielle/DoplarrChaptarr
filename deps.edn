@@ -1,6 +1,6 @@
 {:paths ["src" "resources"]
 
- :deps {org.clojure/clojure {:mvn/version "1.11.1"}
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}
         io.aviso/pretty {:mvn/version "1.1.1"}
         org.clojure/core.cache {:mvn/version "1.0.225"}
         yogthos/config {:mvn/version "1.2.0"}
@@ -15,9 +15,6 @@
         com.taoensso/timbre {:mvn/version "5.2.1"}
         camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}}
 
- :jvm-opts ["-Dconfig=config.edn"]
-
  :aliases {:build {:extra-paths ["build"]
-                   :deps {io.github.seancorfield/build-clj
-                          {:git/tag "v0.8.3" :git/sha "7ac1f8d"}}
+                   :deps {io.github.clojure/tools.build {:git/tag "v0.10.11" :git/sha "c6c670a"}}
                    :ns-default build}}}

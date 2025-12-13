@@ -1,8 +1,23 @@
 (ns build
-  (:require
-   [org.corfield.build :as bb]))
+  (:require [clojure.tools.build.api :as b]))
+
+(def class-dir "target/classes")
+(def uber-file "target/doplarr.jar")
+
+;; delay to defer side effects (artifact downloads)
+(def basis (delay (b/create-basis {:project "deps.edn"})))
+
+(defn clean [_]
+  (b/delete {:path "target"}))
 
 (defn uber [_]
-  (bb/clean nil)
-  (bb/uber {:uber-file "target/doplarr.jar"
-            :main 'doplarr.core}))
+  (clean nil)
+  (b/copy-dir {:src-dirs ["src" "resources"]
+               :target-dir class-dir})
+  (b/compile-clj {:basis @basis
+                  :ns-compile '[doplarr.core]
+                  :class-dir class-dir})
+  (b/uber {:class-dir class-dir
+           :uber-file uber-file
+           :basis @basis
+           :main 'doplarr.core}))
