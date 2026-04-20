@@ -48,6 +48,8 @@ jobs:
               uses: docker/metadata-action@v5
               with:
                   images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+                  flavor: |
+                      latest=${{ github.ref == 'refs/heads/main' }}
             - name: Build and push Docker image
               uses: docker/build-push-action@v6
               with:
