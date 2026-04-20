@@ -7,11 +7,13 @@
 (spec/def :sonarr/url string?)
 (spec/def :radarr/url string?)
 (spec/def :overseerr/url string?)
+(spec/def :chaptarr/url string?)
 
 ; Backend API keys
 (spec/def :sonarr/api string?)
 (spec/def :radarr/api string?)
 (spec/def :overseerr/api string?)
+(spec/def :chaptarr/api string?)
 
 ; Discord bot token - the only really "required" item
 (spec/def :discord/token string?)
@@ -33,6 +35,13 @@
 ; Overseerr optionals
 (spec/def :overseerr/default-id pos-int?)
 
+; Chaptarr optionals (fork addition)
+(spec/def :chaptarr/ebook-rootfolder string?)
+(spec/def :chaptarr/audiobook-rootfolder string?)
+(spec/def :chaptarr/ebook-quality-profile string?)
+(spec/def :chaptarr/audiobook-quality-profile string?)
+(spec/def :chaptarr/metadata-profile string?)
+
 ; Doplarr optionals
 (spec/def ::partial-seasons boolean?)
 (spec/def ::log-level #{:trace :debug :info :warn :error :fatal :report})
@@ -45,8 +54,8 @@
 (defmacro matched-keys [& ks]
   `(when-req #(some (partial contains? %) ~(vec ks)) (spec/keys :req ~(vec ks))))
 
-(spec/def ::has-backend #(some (partial contains? %) [:sonarr/url :radarr/url :overseerr/url]))
-(expound/defmsg ::has-backend "config must contain at least one of the following backends: sonarr, radarr, overseerr
+(spec/def ::has-backend #(some (partial contains? %) [:sonarr/url :radarr/url :overseerr/url :chaptarr/url]))
+(expound/defmsg ::has-backend "config must contain at least one of the following backends: sonarr, radarr, overseerr, chaptarr
 If you have configured one, make sure to check spelling. A valid configuration contains both the api key and url")
 
 ; Complete configuration
@@ -60,10 +69,16 @@ If you have configured one, make sure to check spelling. A valid configuration c
                                      :sonarr/season-folders
                                      :overseerr/default-id
                                      :sonarr/rootfolder
-                                     :radarr/rootfolder]
+                                     :radarr/rootfolder
+                                     :chaptarr/ebook-rootfolder
+                                     :chaptarr/audiobook-rootfolder
+                                     :chaptarr/ebook-quality-profile
+                                     :chaptarr/audiobook-quality-profile
+                                     :chaptarr/metadata-profile]
                                :opt-un [::partial-seasons
                                         ::log-level])
                     ::has-backend
                     (matched-keys :sonarr/url :sonarr/api)
                     (matched-keys :radarr/url :radarr/api)
-                    (matched-keys :overseerr/url :overseerr/api)))
+                    (matched-keys :overseerr/url :overseerr/api)
+                    (matched-keys :chaptarr/url :chaptarr/api)))
