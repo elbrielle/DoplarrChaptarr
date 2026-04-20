@@ -97,11 +97,19 @@ Optional Settings table, plus five rows in the Optional Settings table for the
 
 ### `src/doplarr/discord.clj`
 
-Two entries added to the `request-thumbnail` map (for `:book` and
-`:audiobook`). Without these, `request-embed` emits `{:thumbnail {:url nil}}`
-for book requests, which Discord may reject as an invalid embed. Both entries
-reuse the Doplarr logo URL already referenced in README.md. No other lines
-were changed.
+Two localized changes, both pure insertions (no existing lines rewritten):
+
+1. **`request-thumbnail` map** — two entries added (`:book`, `:audiobook`)
+   reusing the Doplarr logo URL from README.md. Without these, `request-embed`
+   would emit `{:thumbnail {:url nil}}` for book requests, which Discord may
+   reject as an invalid embed.
+2. **`request-embed` signature and fields vector** — added a
+   `:metadata-profile` destructure binding and a corresponding "Metadata
+   Profile" field inside the `filterv`. Chaptarr's metadata profile concept
+   (edition filtering by language/format/rating/pages) does not map onto
+   Sonarr's `:language-profile`, so the hardcoded "Language Profile" label
+   would be misleading for book requests. The original `:language-profile`
+   path is preserved for Sonarr.
 
 ---
 

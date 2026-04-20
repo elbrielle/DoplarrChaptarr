@@ -1,7 +1,9 @@
 (ns doplarr.backends.chaptarr.impl
   (:require
+   [clojure.core.async :as a]
    [doplarr.state :as state]
-   [doplarr.utils :as utils]))
+   [doplarr.utils :as utils]
+   [fmnoise.flow :refer [then]]))
 
 (def base-url (delay (str (:chaptarr/url @state/config) "/api/v1")))
 (def api-key  (delay (:chaptarr/api @state/config)))
@@ -93,7 +95,10 @@
 (defn status
   "Determine whether a book already added to Chaptarr is available/processing
   for the requested format. Returns nil when the book is not yet added or not
-  monitored for this format — the caller should then POST to add it."
+  monitored for this format. Uses format-specific statistics only — the
+  book-level hasFile field is format-agnostic in Readarr/Chaptarr (true when
+  any format has a file) and would cross-contaminate the format-specific
+  contract if consulted here."
   [details media-type]
   (let [audiobook? (= media-type :audiobook)
         monitored? (if audiobook?
@@ -102,11 +107,33 @@
         stats      (if audiobook?
                      (:audiobook-statistics details)
                      (:ebook-statistics details))
-        has-file?  (boolean
-                    (or (pos? (or (:book-file-count (or stats {})) 0))
-                        (:has-file details)))]
+        file-count (or (:book-file-count stats) 0)]
     (when monitored?
-      (if has-file? :available :processing))))
+      (if (pos? file-count) :available :processing))))
+
+(defn update-monitor-payload
+  "Given an existing book record (kebab-cased, fetched via /book/{id}), return
+  a modified copy with the requested format's monitor flag flipped on and the
+  book-level monitored flag ensured true. Preserves any other format flag
+  already set so we never clobber a monitor the user established earlier."
+  [existing media-type]
+  (-> existing
+      (assoc :monitored true)
+      (assoc (if (= media-type :audiobook)
+               :audiobook-monitored
+               :ebook-monitored)
+             true)))
+
+(defn search-book
+  "Trigger Chaptarr's active BookSearch command for a book id. Used after a
+  PUT that flips on a new format's monitor flag so Chaptarr actually grabs
+  the newly-monitored format rather than waiting for RSS."
+  [book-id]
+  (a/go
+    (->> (a/<! (POST "/command" {:form-params {:name "BookSearch"
+                                               :bookIds [book-id]}
+                                 :content-type :json}))
+         (then (constantly nil)))))
 
 (defn request-payload
   "Build the POST /api/v1/book body for Chaptarr.

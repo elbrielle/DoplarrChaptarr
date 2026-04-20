@@ -72,7 +72,7 @@
        :media-type media-type
        :request-formats [""]
        :quality-profile (utils/name-from-id quality-profiles quality-profile-id)
-       :language-profile (utils/name-from-id metadata-profiles metadata-profile-id)
+       :metadata-profile (utils/name-from-id metadata-profiles metadata-profile-id)
        :rootfolder (utils/name-from-id rootfolders rootfolder-id)})))
 
 (defn- resolve-format-rootfolder-paths
@@ -93,12 +93,29 @@
           current-status (when existing (impl/status existing media-type))
           rfs (a/<! (impl/rootfolders))
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
-          format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
-          submit-payload (-> payload
-                             (assoc :media-type media-type)
-                             (merge format-paths))]
-      (if current-status
+          format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)]
+      (cond
+        ;; Already monitored for this format — short-circuit with the derived status
         current-status
-        (->> (a/<! (impl/POST "/book" {:form-params (utils/to-camel (impl/request-payload submit-payload))
-                                       :content-type :json}))
-             (then (constantly nil)))))))
+        current-status
+
+        ;; Book already in the library but this format isn't monitored yet.
+        ;; PUT the existing record with the requested monitor flag flipped on,
+        ;; then kick off an active BookSearch so Chaptarr grabs the new format
+        ;; rather than waiting for RSS. POSTing here would 409 in Chaptarr's
+        ;; AddBookService because the foreignBookId already exists.
+        existing
+        (->> (a/<! (impl/PUT (str "/book/" existing-book-id)
+                             {:form-params (utils/to-camel
+                                            (impl/update-monitor-payload existing media-type))
+                              :content-type :json}))
+             (then (fn [_] (impl/search-book existing-book-id))))
+
+        ;; Book not yet in Chaptarr — add it via POST with the full payload
+        :else
+        (let [submit-payload (-> payload
+                                 (assoc :media-type media-type)
+                                 (merge format-paths))]
+          (->> (a/<! (impl/POST "/book" {:form-params (utils/to-camel (impl/request-payload submit-payload))
+                                         :content-type :json}))
+               (then (constantly nil))))))))
