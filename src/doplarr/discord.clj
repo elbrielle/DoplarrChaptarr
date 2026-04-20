@@ -113,7 +113,7 @@
 (defn dropdown-result [interaction]
   (Integer/parseInt (s/select-one [:payload :values 0] interaction)))
 
-(defn request-embed [{:keys [media-type title overview poster season quality-profile language-profile rootfolder]}]
+(defn request-embed [{:keys [media-type title overview poster season quality-profile language-profile metadata-profile rootfolder]}]
   {:title title
    :description overview
    :image {:url poster}
@@ -127,6 +127,9 @@
              (when language-profile
                {:name "Language Profile"
                 :value language-profile})
+             (when metadata-profile
+               {:name "Metadata Profile"
+                :value metadata-profile})
              (when season
                {:name "Season"
                 :value (if (= season -1) "All" season)})
