@@ -41,6 +41,24 @@ As a note, this bot isn't meant to wrap the entirety of what Overseerr can do, j
 necessary bits for requesting with optional 4K and quota support. Just use the
 web interface to Overseerr if you need more features.
 
+## Chaptarr
+
+Chaptarr is a Readarr fork that manages both ebooks and audiobooks. When
+`CHAPTARR__URL` and `CHAPTARR__API` are configured, this fork registers two
+slash subcommands: `/request book` (ebook) and `/request audiobook`. The
+API key is under `Settings → General` in Chaptarr.
+
+Set `CHAPTARR__URL` and `CHAPTARR__API` in the same form as the other backends
+(the URL must include the protocol, e.g. `http://localhost:8789`). Requests
+submitted through this bot monitor only the specific book requested — the
+author is added with `monitorNewItems: "none"` so Chaptarr does not flood the
+library with the entire back catalog.
+
+Because ebooks and audiobooks typically live under separate root folders and
+often use different quality profiles, the per-format defaults below are
+recommended. When a default is not set and the backend has multiple options,
+Doplarr will prompt the user with a dropdown at request time.
+
 ## Optional Settings
 
 | Environment Variable (Docker)  | Config File Keyword            | Type    | Default Value | Description                                                                                                                                 |
@@ -54,6 +72,11 @@ web interface to Overseerr if you need more features.
 | `SONARR__SEASON_FOLDERS`       | `:sonarr/season-folders`       | Boolean | `false`       | Sets whether you're using season folders in Sonarr                                                                                          |
 | `SONARR__LANGUAGE_PROFILE`     | `:sonarr/language-profile`     | String  | N/A           | The name of the language profile to use by default for Sonarr                                                                               |
 | `OVERSEERR__DEFAULT_ID`        | `:overseerr/default-id`        | Integer | N/A           | The Overseerr user id to use by default if there is no associated discord account for the requester                                         |
+| `CHAPTARR__EBOOK_ROOTFOLDER`         | `:chaptarr/ebook-rootfolder`         | String  | N/A | The Chaptarr root folder path to use by default for `/request book`. Example: `/cw-book-ingest`                                           |
+| `CHAPTARR__AUDIOBOOK_ROOTFOLDER`     | `:chaptarr/audiobook-rootfolder`     | String  | N/A | The Chaptarr root folder path to use by default for `/request audiobook`. Example: `/audiobooks/audiobooks`                              |
+| `CHAPTARR__EBOOK_QUALITY_PROFILE`    | `:chaptarr/ebook-quality-profile`    | String  | N/A | The Chaptarr quality profile name to use by default for ebook requests                                                                    |
+| `CHAPTARR__AUDIOBOOK_QUALITY_PROFILE`| `:chaptarr/audiobook-quality-profile`| String  | N/A | The Chaptarr quality profile name to use by default for audiobook requests                                                                |
+| `CHAPTARR__METADATA_PROFILE`         | `:chaptarr/metadata-profile`         | String  | N/A | The Chaptarr metadata profile name to use for all book requests                                                                            |
 | `PARTIAL_SEASONS`              | `:partial-seasons`             | Boolean | `true`        | Sets whether users can request partial seasons.                                                                                             |
 | `LOG_LEVEL`                    | `:log-level`                   | Keyword | `:info`       | The log level for the logging backend. This can be changed for debugging purposes. One of `:trace :debug :info :warn :error :fatal :report` |
 

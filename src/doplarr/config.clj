@@ -24,6 +24,14 @@
     :overseerr/url
     :overseerr/api
     :overseerr/default-id
+    ; Chaptarr (fork addition)
+    :chaptarr/url
+    :chaptarr/api
+    :chaptarr/ebook-rootfolder
+    :chaptarr/audiobook-rootfolder
+    :chaptarr/ebook-quality-profile
+    :chaptarr/audiobook-quality-profile
+    :chaptarr/metadata-profile
     ; Discord
     :discord/token
     :discord/max-results
@@ -53,6 +61,7 @@
         (redact :sonarr/api)
         (redact :radarr/api)
         (redact :overseerr/api)
+        (redact :chaptarr/api)
         (redact :discord/token))))
 
 (defn valid-config [env]
@@ -75,7 +84,8 @@
                     :sonarr [:series]
                     :overseerr [:movie :series]
                     :readarr [:book]
-                    :lidarr [:music]})
+                    :lidarr [:music]
+                    :chaptarr [:book :audiobook]})
 
 (def media-backend
   (-> (for [[key types] backend-media]
@@ -91,7 +101,8 @@
     (:radarr/url env) (conj :radarr)
     (:sonarr/url env) (conj :sonarr)
     (:readarr/url env) (conj :readarr)
-    (:lidarr/url env) (conj :lidarr)))
+    (:lidarr/url env) (conj :lidarr)
+    (:chaptarr/url env) (conj :chaptarr)))
 
 (defn available-media [env]
   (into #{} (flatten (map backend-media (available-backends env)))))

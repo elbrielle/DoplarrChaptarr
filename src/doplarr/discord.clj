@@ -40,7 +40,9 @@
 
 (def request-thumbnail
   {:series "https://thetvdb.com/images/logo.png"
-   :movie "https://i.imgur.com/44ueTES.png"})
+   :movie "https://i.imgur.com/44ueTES.png"
+   :book "https://raw.githubusercontent.com/kiranshila/Doplarr/main/logos/logo_title.png"
+   :audiobook "https://raw.githubusercontent.com/kiranshila/Doplarr/main/logos/logo_title.png"})
 
 (defn application-command-interaction-option-data [app-com-int-opt]
   [(keyword (:name app-com-int-opt))
