@@ -250,43 +250,71 @@ see unwanted auto-monitoring, flip `ebookMonitorFuture: false` on the
 author in the Chaptarr UI once you've grabbed the specific book you
 wanted.
 
-### 3.13 Chaptarr creates placeholder book rows during author-add
+### 3.13 Placeholder book rows AND the author-add race
 
-When Chaptarr adds a new author, it creates multiple book entities in
-the same local DB transaction — not just one per edition, but sometimes
-**skeleton/placeholder rows** that haven't yet been resolved against the
-metadata source. Observed in live testing: searching for a book called
-"Orbital" under a new author produced:
+Two intertwined issues, documented together because the fix for one
+exposed the other.
 
-- **10943** — `"Orbital"`, `mediaType: "ebook"`, `images: []`, no
-  `releaseDate`, no ratings — a placeholder the metadata source hadn't
-  populated yet
-- **10945** — `"Orbital: A Novel"`, `mediaType: "ebook"`,
-  `images: [...]`, `releaseDate: "2023-12-05"`,
-  `ratings: {votes: 18667, popularity: 76534.7}` — the actual resolved
-  edition
-- **10937** — audiobook row
+**(a) Placeholder rows.** When Chaptarr adds a new author, it creates
+book entities in its local DB before the metadata source has fully
+resolved them. These placeholder rows are visible via
+`GET /api/v1/book?authorId=<id>` immediately after POST. Fingerprint of
+a placeholder:
 
-Chaptarr silently rejects monitor-flag PUTs against placeholder rows,
-even when the author is correctly enabled for that format. The HTTP PUT
-returns 2xx; the change just doesn't persist. (Same failure mode as
-§3.12 but a different root cause.)
+- `releaseDate` is `null`
+- `images` is `[]`
+- `ratings: { votes: 0, popularity: 0 }`
+- **`foreignEditionId` starts with `"default-"`** — a literal Chaptarr
+  marker for unresolved placeholders (e.g., `"default-10962"`)
 
-The fork's `preferred-book-for-format` selector accounts for this:
+Chaptarr silently rejects monitor-flag PUTs against placeholder rows.
+The HTTP PUT returns 2xx; the change doesn't persist. Chaptarr logs
+`"author is not monitored for <format>"` server-side even when the
+author IS correctly enabled — the log is misleading for this failure
+mode (same symptom as §3.12, different root cause).
 
-1. Filters to books whose format matches (mediaType or edition.isEbook).
-2. Among matches, gives a big ranking bonus to **resolved editions**
-   (those with both `releaseDate` set AND non-empty `images`).
-3. Among equally-resolved candidates, tiebreaks on `ratings.popularity`,
-   then `ratings.votes`, then `releaseDate`.
+**(b) The race.** Chaptarr's author-add POST returns fast (tens of ms),
+but real edition rows only materialize seconds later once the metadata
+source (Hardcover / Goodreads / Amazon via `api2.chaptarr.com`) responds.
+So the fork's flow is racing Chaptarr's background refresh — a naïve
+`POST → GET /book?authorId → PUT` sequence often PUTs a placeholder.
 
-Resolved editions always win over placeholders. If a search happens
-before Chaptarr has resolved *any* real edition (rare — metadata source
-usually populates within seconds), the fork falls back to the
-best-scoring placeholder, the monitor PUT will drop silently, and
-`chaptarr.clj/request` logs a warning. Operator signal for that
-scenario: `"Chaptarr silently rejected monitor flip on book <id>..."`
-in doplarr logs.
+Live example (test run 5): a request for "Everyone in My Family Has
+Killed Someone" targeted placeholder row 10962
+(`foreignEditionId: "default-10962"`, no metadata). The real edition
+row 10963 (`foreignEditionId: "az:B09Y94K74X-ebook"`, full metadata)
+appeared ~10 seconds later — after the PUT and BookSearch had already
+targeted the placeholder.
+
+**Fork mitigation (two layers):**
+
+1. `wait-for-resolved-book` polls `/book?authorId=<id>` every 1 second
+   (up to 20 attempts = ~20s ceiling) immediately after author-add.
+   Returns as soon as at least one book under the author matches the
+   requested format AND passes `book-row-complete?`. Only runs on
+   fresh author-adds — cross-format re-requests against existing
+   authors skip it (those books are already resolved).
+
+2. `book-row-complete?` requires ALL of: non-null `releaseDate`,
+   non-empty `images`, and `foreignEditionId` NOT starting with
+   `"default-"`. The third check is the most reliable — it's an
+   explicit Chaptarr-internal marker.
+
+3. `preferred-book-for-format` still ranks resolved editions above
+   placeholders via a +10 completeness bonus, as a belt-and-suspenders
+   tiebreaker after the polling step.
+
+4. If polling hits the attempt cap and no resolved editions have
+   appeared, the fork proceeds with placeholder rows (logged as a
+   warning) rather than blocking the user's request. The PUT-response
+   check in `chaptarr.clj/request` then catches the silent failure and
+   logs a second warning that uniquely identifies this scenario:
+   `"Chaptarr silently rejected monitor flip on book <id>"`.
+
+Expected operator signal when things work: both warnings stay quiet,
+log shows `Chaptarr request: selected book <id> for <format> request
+(N/M matching rows under author)`, and the book id is a resolved
+edition (not a `default-*` placeholder).
 
 ### 3.14 Image URL availability shifts after author-add
 
@@ -380,5 +408,6 @@ the user confirms. Logged here for future reference.
 | 2026-04-21    | Author *MonitorFuture gates per-book PUT | ensure-author-enabled-for-format        |
 | 2026-04-21    | Chaptarr creates placeholder book rows | Completeness boost in preferred-book ranking |
 | 2026-04-21    | PUT response silently 2xxs on rejection | Log warning from updated flag in response body |
+| 2026-04-21    | Race: placeholders only exist for ~seconds after POST | wait-for-resolved-book polls until real edition materializes |
 
 Add new rows when you find new surprises.

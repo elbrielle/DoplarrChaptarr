@@ -235,6 +235,7 @@
     (let [rfs (a/<! (impl/rootfolders))
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
           format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
+          freshly-added? (nil? (:existing-book-id payload))
           author-id (a/<! (resolve-author-id payload media-type format-paths))
           ;; Must happen BEFORE the per-book PUT: Chaptarr silently rejects
           ;; book-level *Monitored=true when the author's *MonitorFuture flag
@@ -243,7 +244,18 @@
           ;; on cross-format re-requests. See CHAPTARR_INTEGRATION.md §3.12.
           _ (when author-id
               (a/<! (impl/ensure-author-enabled-for-format author-id media-type)))
-          books (when author-id (a/<! (impl/books-for-author author-id)))
+          ;; Chaptarr's author-add returns before the metadata source has
+          ;; materialized real edition rows — only skeleton placeholders
+          ;; exist for a few seconds. We poll /book?authorId=... until at
+          ;; least one resolved edition for the requested format shows up,
+          ;; otherwise we'd race into PUTing a placeholder that Chaptarr
+          ;; silently drops. Cross-format re-requests against an existing
+          ;; author skip this path — those books are already resolved.
+          ;; See CHAPTARR_INTEGRATION.md §3.13.
+          books (when author-id
+                  (a/<! (if freshly-added?
+                          (impl/wait-for-resolved-book author-id media-type)
+                          (impl/books-for-author author-id))))
           target-book (impl/preferred-book-for-format books media-type)
           current-status (when target-book (impl/status target-book media-type))]
       (cond

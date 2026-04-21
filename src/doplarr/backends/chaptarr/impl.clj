@@ -330,6 +330,57 @@
    "/book"
    {:query-params {:authorId author-id}}))
 
+;; Forward declarations — these predicates are defined below with the ranking
+;; helpers but `wait-for-resolved-book` needs to call them inside its go-loop.
+(declare book-matches-format? book-row-complete?)
+
+(defn wait-for-resolved-book
+  "Poll /book?authorId=... until at least one resolved edition exists for the
+  requested format, or we hit the attempt cap.
+
+  Chaptarr's POST /book returns before the metadata source has fully
+  resolved the author's catalog — immediately after POST, the only rows
+  that exist may be skeleton placeholders with `default-*` foreignEditionIds,
+  null releaseDate, and empty images. Chaptarr silently rejects monitor-flag
+  PUTs against those rows (returns 2xx, drops the write, logs
+  'author is not monitored for <format>' server-side). Real edition rows
+  appear within a few seconds as Chaptarr's background refresh populates them.
+
+  This helper polls until either condition:
+  - at least one book under the author matches the requested format AND
+    passes `book-row-complete?` — return the current books list, letting
+    `preferred-book-for-format` pick the best one downstream
+  - attempt cap hit — return whatever we have so the flow still proceeds;
+    the PUT-response warning in `chaptarr.clj/request` will catch the
+    silent failure case and give the operator a clear log signal
+
+  Defaults (max-attempts 20, interval-ms 1000) yield a ~20s ceiling. Well
+  under Discord's 15-minute interaction auth window."
+  ([author-id media-type]
+   (wait-for-resolved-book author-id media-type {}))
+  ([author-id media-type {:keys [max-attempts interval-ms]
+                          :or {max-attempts 20 interval-ms 1000}}]
+   (a/go-loop [attempt 0]
+     (let [books (a/<! (books-for-author author-id))
+           resolved-for-format (filter #(and (book-matches-format? % media-type)
+                                             (book-row-complete? %))
+                                       books)]
+       (cond
+         (seq resolved-for-format)
+         books
+
+         (>= attempt max-attempts)
+         (do (warn (str "wait-for-resolved-book: hit attempt cap ("
+                        max-attempts ") for author " author-id " "
+                        (name media-type) " — Chaptarr may still be resolving "
+                        "metadata; proceeding with whatever we have"))
+             books)
+
+         :else
+         (do
+           (a/<! (a/timeout interval-ms))
+           (recur (inc attempt))))))))
+
 (defn book-matches-format?
   "True when a book entity's format discriminator matches the requested
   media-type. Prefers Chaptarr's mediaType field, falling back to
@@ -351,12 +402,21 @@
   "True when a Chaptarr book row looks like a resolved edition rather than a
   skeleton/placeholder. Chaptarr creates placeholder rows during author-add
   before the metadata source has populated them — those rows have empty
-  images, no releaseDate, and zero ratings, and Chaptarr silently rejects
-  monitor-flag PUTs against them. Real editions have both a release date
-  and at least one image populated. See CHAPTARR_INTEGRATION.md §3.13."
+  images, null releaseDate, zero ratings, and a foreignEditionId that
+  starts with \"default-\" (literal placeholder marker). Chaptarr silently
+  rejects monitor-flag PUTs against placeholder rows. See
+  CHAPTARR_INTEGRATION.md §3.13.
+
+  A row is considered resolved when ALL of these hold:
+  - releaseDate is set
+  - images[] is non-empty
+  - foreignEditionId is present and does not start with \"default-\""
   [book]
-  (and (:release-date book)
-       (seq (:images book))))
+  (let [edition-id (:foreign-edition-id book)]
+    (and (:release-date book)
+         (seq (:images book))
+         (string? edition-id)
+         (not (str/starts-with? edition-id "default-")))))
 
 (defn- format-match-rank
   "Score how confidently a Chaptarr book row matches the requested format, and
