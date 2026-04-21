@@ -17,16 +17,26 @@
 (defn PUT [endpoint & [params]]
   (utils/http-request :put (str @base-url endpoint) @api-key params))
 
+(defn- process-chaptarr-profile
+  "Chaptarr profiles carry a profileType discriminator we must preserve for
+  per-format routing. Quality endpoint returns profileType as a string
+  (\"ebook\"/\"audiobook\"); metadata endpoint returns it as an int
+  (0=None, 1=audiobook, 2=ebook). Both are passed through as-is."
+  [profile]
+  (-> profile
+      (select-keys ["id" "name" "profileType"])
+      utils/from-camel))
+
 (defn quality-profiles []
   (utils/request-and-process-body
    GET
-   #(map utils/process-profile %)
+   #(map process-chaptarr-profile %)
    "/qualityprofile"))
 
 (defn metadata-profiles []
   (utils/request-and-process-body
    GET
-   #(map utils/process-profile %)
+   #(map process-chaptarr-profile %)
    "/metadataprofile"))
 
 (defn rootfolders []
@@ -138,14 +148,22 @@
 (defn request-payload
   "Build the POST /api/v1/book body for Chaptarr.
 
-  Sets the format-specific monitor flag (ebookMonitored or audiobookMonitored)
-  and includes both ebook and audiobook root folder paths on the author so
-  future requests for the other format land correctly. monitorNewItems=\"none\"
-  and addOptions.monitor=\"specificBook\" prevent flooding the library with
-  every book from the added author — per CHAPTARR_KNOWLEDGE.md §7."
+  Chaptarr's author model has separate quality and metadata profile IDs for
+  ebooks and audiobooks. The singular qualityProfileId / metadataProfileId
+  accepted by Readarr and other *arrs is silently ignored — we must send all
+  four per-format IDs explicitly or the author lands without usable config
+  (verified against a Chaptarr 0.9.418 author record).
+
+  Also sets the format-specific monitor flag (ebookMonitored or
+  audiobookMonitored) and includes both ebook and audiobook root folder
+  paths on the author so future requests for the other format land correctly.
+  monitorNewItems=\"none\" and addOptions.monitor=\"specificBook\" prevent
+  flooding the library with every book from the added author — per
+  CHAPTARR_KNOWLEDGE.md §7."
   [payload]
   (let [{:keys [title foreign-book-id foreign-author-id author-name
-                quality-profile-id metadata-profile-id
+                ebook-quality-profile-id audiobook-quality-profile-id
+                ebook-metadata-profile-id audiobook-metadata-profile-id
                 ebook-rootfolder-path audiobook-rootfolder-path
                 media-type]} payload
         audiobook? (= media-type :audiobook)
@@ -155,18 +173,22 @@
                             ebook-rootfolder-path)]
     {:title title
      :foreign-book-id foreign-book-id
-     :quality-profile-id quality-profile-id
-     :metadata-profile-id metadata-profile-id
      :monitored true
      :ebook-monitored ebook?
      :audiobook-monitored audiobook?
      :root-folder-path chosen-rootfolder
+     :ebook-quality-profile-id    ebook-quality-profile-id
+     :audiobook-quality-profile-id audiobook-quality-profile-id
+     :ebook-metadata-profile-id    ebook-metadata-profile-id
+     :audiobook-metadata-profile-id audiobook-metadata-profile-id
      :author {:author-name author-name
               :foreign-author-id foreign-author-id
-              :quality-profile-id quality-profile-id
-              :metadata-profile-id metadata-profile-id
+              :ebook-quality-profile-id    ebook-quality-profile-id
+              :audiobook-quality-profile-id audiobook-quality-profile-id
+              :ebook-metadata-profile-id    ebook-metadata-profile-id
+              :audiobook-metadata-profile-id audiobook-metadata-profile-id
               :root-folder-path chosen-rootfolder
-              :ebook-root-folder-path ebook-rootfolder-path
+              :ebook-root-folder-path    ebook-rootfolder-path
               :audiobook-root-folder-path audiobook-rootfolder-path
               :ebook-monitor-future false
               :audiobook-monitor-future false

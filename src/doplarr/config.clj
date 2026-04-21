@@ -31,7 +31,8 @@
     :chaptarr/audiobook-rootfolder
     :chaptarr/ebook-quality-profile
     :chaptarr/audiobook-quality-profile
-    :chaptarr/metadata-profile
+    :chaptarr/ebook-metadata-profile
+    :chaptarr/audiobook-metadata-profile
     ; Discord
     :discord/token
     :discord/max-results

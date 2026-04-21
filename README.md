@@ -42,9 +42,10 @@ Recommended (so requests skip the root-folder and quality-profile dropdowns):
 ```
 CHAPTARR__EBOOK_ROOTFOLDER=/cw-book-ingest
 CHAPTARR__AUDIOBOOK_ROOTFOLDER=/audiobooks/audiobooks
-CHAPTARR__EBOOK_QUALITY_PROFILE=<your ebook profile name>
-CHAPTARR__AUDIOBOOK_QUALITY_PROFILE=<your audiobook profile name>
-CHAPTARR__METADATA_PROFILE=<your metadata profile name>
+CHAPTARR__EBOOK_QUALITY_PROFILE=<your ebook quality profile name, e.g. E-Book>
+CHAPTARR__AUDIOBOOK_QUALITY_PROFILE=<your audiobook quality profile name, e.g. Audiobook>
+CHAPTARR__EBOOK_METADATA_PROFILE=<your ebook metadata profile name, e.g. Ebook Default>
+CHAPTARR__AUDIOBOOK_METADATA_PROFILE=<your audiobook metadata profile name, e.g. Audiobook Default>
 ```
 
 If you also want movie / TV requests through the same bot, add `OVERSEERR__URL` + `OVERSEERR__API` (or `SONARR__*` + `RADARR__*`) alongside the Chaptarr keys. All three backend families can coexist.

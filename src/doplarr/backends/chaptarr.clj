@@ -17,53 +17,135 @@
     :chaptarr/audiobook-quality-profile
     :chaptarr/ebook-quality-profile))
 
+(defn- metadata-profile-config-key [media-type]
+  (if (= media-type :audiobook)
+    :chaptarr/audiobook-metadata-profile
+    :chaptarr/ebook-metadata-profile))
+
+(defn- quality-profiles-for
+  "Filter quality profiles to the ones matching a given media-type.
+  Chaptarr's quality profileType is a string: \"ebook\" or \"audiobook\"."
+  [media-type profiles]
+  (let [target (if (= media-type :audiobook) "audiobook" "ebook")]
+    (filter #(= target (:profile-type %)) profiles)))
+
+(defn- metadata-profiles-for
+  "Filter metadata profiles to the ones matching a given media-type.
+  Chaptarr's metadata profileType is an int: 0=None, 1=audiobook, 2=ebook."
+  [media-type profiles]
+  (let [target (if (= media-type :audiobook) 1 2)]
+    (filter #(= target (:profile-type %)) profiles)))
+
+(defn- auto-pick-profile
+  "Resolve a profile id for a format we are NOT prompting the user about
+  (always the 'other' format on a given request). Preference order: configured
+  env name → single profile of this type → first profile of this type →
+  first profile overall (a None-type fallback for fresh installs with no
+  matching profile). Returns nil if the whole profile list is empty."
+  [config-name all-profiles filtered-profiles]
+  (or (and config-name (utils/id-from-name all-profiles config-name))
+      (:id (first filtered-profiles))
+      (:id (first all-profiles))))
+
+(defn- resolve-requested-profile
+  "For the profile the user IS being prompted about (the quality profile of
+  the format they're requesting): prefer an env default, auto-pick if there
+  is exactly one matching profile, otherwise return the filtered list so the
+  interaction state machine renders a dropdown."
+  [config-name all-profiles filtered-profiles]
+  (let [env-id (and config-name (utils/id-from-name all-profiles config-name))]
+    (cond
+      env-id                         env-id
+      (= 1 (count filtered-profiles)) (:id (first filtered-profiles))
+      (seq filtered-profiles)         filtered-profiles
+      :else                           (:id (first all-profiles)))))
+
 (defn search [term _]
   (impl/lookup-book term))
 
 (defn additional-options [_ media-type]
   (a/go
-    (let [quality-profiles (a/<! (impl/quality-profiles))
-          metadata-profiles (a/<! (impl/metadata-profiles))
-          rootfolders (a/<! (impl/rootfolders))
-          config @state/config
-          quality-profile (get config (quality-profile-config-key media-type))
-          rootfolder (get config (rootfolder-config-key media-type))
-          metadata-profile (:chaptarr/metadata-profile config)
-          default-profile-id (utils/id-from-name quality-profiles quality-profile)
-          default-metadata-id (utils/id-from-name metadata-profiles metadata-profile)
-          default-root-folder (utils/id-from-name rootfolders rootfolder)]
-      (when (and quality-profile (nil? default-profile-id))
-        (warn (str "Chaptarr " (name media-type) " quality profile `" quality-profile
+    (let [all-q-profiles (a/<! (impl/quality-profiles))
+          all-m-profiles (a/<! (impl/metadata-profiles))
+          rootfolders    (a/<! (impl/rootfolders))
+          config         @state/config
+
+          audiobook?       (= media-type :audiobook)
+          ebook-q-profiles     (quality-profiles-for :book all-q-profiles)
+          audiobook-q-profiles (quality-profiles-for :audiobook all-q-profiles)
+          ebook-m-profiles     (metadata-profiles-for :book all-m-profiles)
+          audiobook-m-profiles (metadata-profiles-for :audiobook all-m-profiles)
+
+          ebook-q-cfg     (:chaptarr/ebook-quality-profile     config)
+          audiobook-q-cfg (:chaptarr/audiobook-quality-profile config)
+          ebook-m-cfg     (:chaptarr/ebook-metadata-profile    config)
+          audiobook-m-cfg (:chaptarr/audiobook-metadata-profile config)
+          rootfolder-cfg  (get config (rootfolder-config-key media-type))
+
+          requested-q-cfg (get config (quality-profile-config-key media-type))
+          default-root-folder (utils/id-from-name rootfolders rootfolder-cfg)]
+
+      (when (and ebook-q-cfg (nil? (utils/id-from-name all-q-profiles ebook-q-cfg)))
+        (warn (str "Chaptarr ebook quality profile `" ebook-q-cfg
                    "` not found in backend, check spelling")))
-      (when (and metadata-profile (nil? default-metadata-id))
-        (warn (str "Chaptarr metadata profile `" metadata-profile
+      (when (and audiobook-q-cfg (nil? (utils/id-from-name all-q-profiles audiobook-q-cfg)))
+        (warn (str "Chaptarr audiobook quality profile `" audiobook-q-cfg
                    "` not found in backend, check spelling")))
-      (when (and rootfolder (nil? default-root-folder))
-        (warn (str "Chaptarr " (name media-type) " root folder `" rootfolder
+      (when (and ebook-m-cfg (nil? (utils/id-from-name all-m-profiles ebook-m-cfg)))
+        (warn (str "Chaptarr ebook metadata profile `" ebook-m-cfg
                    "` not found in backend, check spelling")))
-      {:quality-profile-id
-       (cond
-         default-profile-id             default-profile-id
-         (= 1 (count quality-profiles)) (:id (first quality-profiles))
-         :else quality-profiles)
-       :metadata-profile-id
-       (cond
-         default-metadata-id             default-metadata-id
-         (= 1 (count metadata-profiles)) (:id (first metadata-profiles))
-         :else metadata-profiles)
-       :rootfolder-id
-       (cond
-         default-root-folder            default-root-folder
-         (= 1 (count rootfolders))      (:id (first rootfolders))
-         :else rootfolders)})))
+      (when (and audiobook-m-cfg (nil? (utils/id-from-name all-m-profiles audiobook-m-cfg)))
+        (warn (str "Chaptarr audiobook metadata profile `" audiobook-m-cfg
+                   "` not found in backend, check spelling")))
+      (when (and rootfolder-cfg (nil? default-root-folder))
+        (warn (str "Chaptarr " (name media-type) " root folder `" rootfolder-cfg
+                   "` not found in backend, check spelling")))
+
+      (let [;; The user is only ever asked about one quality profile per request
+            ;; — the one matching the format they're invoking. The other
+            ;; format's quality profile is auto-resolved so the author POST
+            ;; has all four required fields populated (Chaptarr silently
+            ;; ignores the singular qualityProfileId, per §3.1 of handoff).
+            requested-q-id (resolve-requested-profile
+                            requested-q-cfg all-q-profiles
+                            (if audiobook? audiobook-q-profiles ebook-q-profiles))
+            other-q-id (auto-pick-profile
+                        (if audiobook? ebook-q-cfg audiobook-q-cfg)
+                        all-q-profiles
+                        (if audiobook? ebook-q-profiles audiobook-q-profiles))
+            ebook-q-id     (if audiobook? other-q-id     requested-q-id)
+            audiobook-q-id (if audiobook? requested-q-id other-q-id)
+
+            ;; Metadata profiles are never prompted — always auto-resolved
+            ;; since they're purely edition-filtering config and users rarely
+            ;; care to pick one at request time.
+            ebook-m-id (auto-pick-profile ebook-m-cfg all-m-profiles ebook-m-profiles)
+            audiobook-m-id (auto-pick-profile audiobook-m-cfg all-m-profiles audiobook-m-profiles)]
+        {;; For the requested format, the key matches the dropdown label the
+         ;; state machine derives from canonical-option-name — e.g.
+         ;; :audiobook-quality-profile-id -> "audiobook quality profile?"
+         :ebook-quality-profile-id     ebook-q-id
+         :audiobook-quality-profile-id audiobook-q-id
+         :ebook-metadata-profile-id    ebook-m-id
+         :audiobook-metadata-profile-id audiobook-m-id
+         :rootfolder-id
+         (cond
+           default-root-folder       default-root-folder
+           (= 1 (count rootfolders)) (:id (first rootfolders))
+           :else                     rootfolders)}))))
 
 (defn request-embed [{:keys [title author-name overview remote-cover
-                             quality-profile-id metadata-profile-id rootfolder-id]}
+                             ebook-quality-profile-id audiobook-quality-profile-id
+                             ebook-metadata-profile-id audiobook-metadata-profile-id
+                             rootfolder-id]}
                      media-type]
   (a/go
     (let [rootfolders (a/<! (impl/rootfolders))
           quality-profiles (a/<! (impl/quality-profiles))
-          metadata-profiles (a/<! (impl/metadata-profiles))]
+          metadata-profiles (a/<! (impl/metadata-profiles))
+          audiobook? (= media-type :audiobook)
+          shown-q-id (if audiobook? audiobook-quality-profile-id ebook-quality-profile-id)
+          shown-m-id (if audiobook? audiobook-metadata-profile-id ebook-metadata-profile-id)]
       {:title (if (and author-name (not (.contains (or title "") author-name)))
                 (str title " — " author-name)
                 title)
@@ -71,8 +153,8 @@
        :poster remote-cover
        :media-type media-type
        :request-formats [""]
-       :quality-profile (utils/name-from-id quality-profiles quality-profile-id)
-       :metadata-profile (utils/name-from-id metadata-profiles metadata-profile-id)
+       :quality-profile (utils/name-from-id quality-profiles shown-q-id)
+       :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
        :rootfolder (utils/name-from-id rootfolders rootfolder-id)})))
 
 (defn- resolve-format-rootfolder-paths

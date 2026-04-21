@@ -43,7 +43,8 @@ Four insertion blocks:
    :chaptarr/audiobook-rootfolder
    :chaptarr/ebook-quality-profile
    :chaptarr/audiobook-quality-profile
-   :chaptarr/metadata-profile
+   :chaptarr/ebook-metadata-profile
+   :chaptarr/audiobook-metadata-profile
    ```
 
 2. **`redact-secrets`** — added one line before the `:discord/token` redaction:
@@ -77,7 +78,8 @@ Four insertion blocks:
    (spec/def :chaptarr/audiobook-rootfolder string?)
    (spec/def :chaptarr/ebook-quality-profile string?)
    (spec/def :chaptarr/audiobook-quality-profile string?)
-   (spec/def :chaptarr/metadata-profile string?)
+   (spec/def :chaptarr/ebook-metadata-profile string?)
+   (spec/def :chaptarr/audiobook-metadata-profile string?)
    ```
 
 3. **`::has-backend`** — added `:chaptarr/url` to the predicate's list and to
@@ -176,3 +178,19 @@ Higher-risk scenarios (not seen as of this writing):
   `:readarr [:book]` entry. Since upstream has no `doplarr.backends.readarr`
   namespace, that entry only activates if the user sets `READARR__URL` — which
   would crash anyway. Keeping it preserves clean merges with upstream.
+- **Four per-format profile IDs on author POST.** Chaptarr silently ignores
+  the singular `qualityProfileId` / `metadataProfileId` fields accepted by
+  other *arrs. The author record needs `ebookQualityProfileId`,
+  `audiobookQualityProfileId`, `ebookMetadataProfileId`, and
+  `audiobookMetadataProfileId` all set, or the author lands with no usable
+  config. `request-payload` sends all four.
+- **Profile type discriminators differ between endpoints.** `/qualityprofile`
+  returns `profileType` as a string (`"ebook"` / `"audiobook"`);
+  `/metadataprofile` returns it as an int (`0` = None, `1` = audiobook,
+  `2` = ebook). `quality-profiles-for` and `metadata-profiles-for` branch on
+  this — don't unify them into a single helper.
+- **Only the requested format's quality profile prompts.** The non-requested
+  format's quality profile and both metadata profiles are auto-resolved from
+  config defaults → single-match fallback → first profile of the right type
+  → first profile overall. Keeps the Discord interaction to one dropdown max
+  while still satisfying Chaptarr's four-field requirement.

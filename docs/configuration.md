@@ -76,7 +76,8 @@ Doplarr will prompt the user with a dropdown at request time.
 | `CHAPTARR__AUDIOBOOK_ROOTFOLDER`     | `:chaptarr/audiobook-rootfolder`     | String  | N/A | The Chaptarr root folder path to use by default for `/request audiobook`. Example: `/audiobooks/audiobooks`                              |
 | `CHAPTARR__EBOOK_QUALITY_PROFILE`    | `:chaptarr/ebook-quality-profile`    | String  | N/A | The Chaptarr quality profile name to use by default for ebook requests                                                                    |
 | `CHAPTARR__AUDIOBOOK_QUALITY_PROFILE`| `:chaptarr/audiobook-quality-profile`| String  | N/A | The Chaptarr quality profile name to use by default for audiobook requests                                                                |
-| `CHAPTARR__METADATA_PROFILE`         | `:chaptarr/metadata-profile`         | String  | N/A | The Chaptarr metadata profile name to use for all book requests                                                                            |
+| `CHAPTARR__EBOOK_METADATA_PROFILE`   | `:chaptarr/ebook-metadata-profile`   | String  | N/A | The Chaptarr metadata profile name to use for ebook requests. Chaptarr stores ebook and audiobook metadata profiles separately (profileType 2 vs 1) |
+| `CHAPTARR__AUDIOBOOK_METADATA_PROFILE`| `:chaptarr/audiobook-metadata-profile`| String | N/A | The Chaptarr metadata profile name to use for audiobook requests                                                                          |
 | `PARTIAL_SEASONS`              | `:partial-seasons`             | Boolean | `true`        | Sets whether users can request partial seasons.                                                                                             |
 | `LOG_LEVEL`                    | `:log-level`                   | Keyword | `:info`       | The log level for the logging backend. This can be changed for debugging purposes. One of `:trace :debug :info :warn :error :fatal :report` |
 
