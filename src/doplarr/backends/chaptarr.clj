@@ -237,7 +237,7 @@
           format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
           author-id (a/<! (resolve-author-id payload media-type format-paths))
           books (when author-id (a/<! (impl/books-for-author author-id)))
-          target-book (first (filter #(impl/book-matches-format? % media-type) books))
+          target-book (impl/preferred-book-for-format books media-type)
           current-status (when target-book (impl/status target-book media-type))]
       (cond
         ;; Already monitored and downloaded/in-progress for this format

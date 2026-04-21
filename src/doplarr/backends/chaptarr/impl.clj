@@ -237,7 +237,7 @@
   metadataProfileId fields are silently ignored. See
   CHAPTARR_INTEGRATION.md §3.2."
   [payload]
-  (let [{:keys [title foreign-book-id foreign-author-id author-name
+  (let [{:keys [title raw-title foreign-book-id foreign-author-id author-name
                 ebook-quality-profile-id audiobook-quality-profile-id
                 ebook-metadata-profile-id audiobook-metadata-profile-id
                 ebook-rootfolder-path audiobook-rootfolder-path
@@ -245,7 +245,7 @@
         chosen-rootfolder (if (= media-type :audiobook)
                             audiobook-rootfolder-path
                             ebook-rootfolder-path)]
-    {:title title
+    {:title (or raw-title title)
      :foreign-book-id foreign-book-id
      ;; All monitor flags false — the caller PUTs the specific book entity
      ;; afterwards to flip only the format the user actually requested.
@@ -302,6 +302,41 @@
         :book      (boolean (:is-ebook first-edition))
         :audiobook (not (:is-ebook first-edition)))
       :else false)))
+
+(defn- format-match-rank
+  "Score how confidently a Chaptarr book row matches the requested format.
+  Prefer explicit mediaType matches over the edition.isEbook fallback."
+  [book media-type]
+  (let [target-mt (if (= media-type :audiobook) "audiobook" "ebook")
+        media-type-field (:media-type book)
+        first-edition (first (:editions book))]
+    (cond
+      (= target-mt media-type-field) 2
+      (some? (:is-ebook first-edition))
+      (case media-type
+        :book      (if (:is-ebook first-edition) 1 0)
+        :audiobook (if (false? (:is-ebook first-edition)) 1 0)
+        0)
+      :else 0)))
+
+(defn preferred-book-for-format
+  "Choose the best Chaptarr book row for a requested format when an author has
+  multiple matching editions. Preference order:
+
+  1. Explicit format match (mediaType) over edition.isEbook fallback
+  2. Higher popularity
+  3. Newer releaseDate
+
+  This avoids blindly taking the first row returned by /book?authorId=..., the
+  ordering of which is not stable across metadata sources."
+  [books media-type]
+  (->> books
+       (filter #(book-matches-format? % media-type))
+       (sort-by (fn [book]
+                  [(format-match-rank book media-type)
+                   (or (:popularity book) 0)
+                   (or (:release-date book) "")]))
+       last))
 
 (defn extract-author-id
   "Pull the newly-created author's id out of the POST /book response body.

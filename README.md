@@ -48,17 +48,18 @@ CHAPTARR__EBOOK_METADATA_PROFILE=<your ebook metadata profile name, e.g. Ebook D
 CHAPTARR__AUDIOBOOK_METADATA_PROFILE=<your audiobook metadata profile name, e.g. Audiobook Default>
 ```
 
-Optional — only if you want book cover images in the Discord confirmation
-embed (Chaptarr returns relative cover paths that Discord can't fetch on its
-own):
+Optional — only if you want the bot to rewrite relative Chaptarr cover paths
+into absolute public URLs instead of downloading and attaching the image
+itself:
 
 ```
 CHAPTARR__PUBLIC_URL=https://chaptarr.example.com
 ```
 
 This must be publicly reachable from Discord's servers — a Docker-internal
-`http://chaptarr:8789` won't work. If left unset, book requests still succeed;
-the confirmation embed just renders without a cover thumbnail.
+`http://chaptarr:8789` won't work. If left unset, the fork falls back to
+downloading the cover over `CHAPTARR__URL` and attaching it directly to the
+Discord confirmation embed. Book requests still work either way.
 
 If you also want movie / TV requests through the same bot, add `OVERSEERR__URL` + `OVERSEERR__API` (or `SONARR__*` + `RADARR__*`) alongside the Chaptarr keys. All three backend families can coexist.
 

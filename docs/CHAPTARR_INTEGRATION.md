@@ -53,15 +53,17 @@ CHAPTARR__EBOOK_METADATA_PROFILE=Ebook Default
 CHAPTARR__AUDIOBOOK_METADATA_PROFILE=Audiobook Default
 ```
 
-Optional (only if you want book covers in the Discord confirmation embed and
-Chaptarr is reachable from the public internet):
+Optional (only if you want book covers rendered via absolute public URLs
+instead of the bot downloading and attaching them directly):
 
 ```
 CHAPTARR__PUBLIC_URL=https://chaptarr.example.com
 ```
 
-Without `CHAPTARR__PUBLIC_URL`, confirmation embeds for book requests render
-without a cover thumbnail. Everything else works.
+Without `CHAPTARR__PUBLIC_URL`, the fork falls back to downloading cover
+bytes via `CHAPTARR__URL` (the Docker-internal address) and attaching them
+to the Discord confirmation embed as a file. Covers still render; only the
+HTTP path differs. See §3.9 for the resolution cascade in detail.
 
 ---
 
@@ -247,7 +249,10 @@ normal — Chaptarr doing format normalization — not a fork bug.
 
 ### Cover images missing in confirmation embed
 
-- Expected unless `CHAPTARR__PUBLIC_URL` is set. See §3.9.
+- Check doplarr logs for `Cover download failed` warnings. With Phase 2, a
+  missing `CHAPTARR__PUBLIC_URL` alone is no longer a blocker — the fork
+  should fall back to downloading the cover over `CHAPTARR__URL` and attaching
+  it directly. See §3.9.
 
 ---
 
