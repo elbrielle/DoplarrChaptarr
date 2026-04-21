@@ -39,6 +39,7 @@ Four insertion blocks:
    ; Chaptarr (fork addition)
    :chaptarr/url
    :chaptarr/api
+   :chaptarr/public-url
    :chaptarr/ebook-rootfolder
    :chaptarr/audiobook-rootfolder
    :chaptarr/ebook-quality-profile
@@ -74,6 +75,7 @@ Four insertion blocks:
 
 2. **Chaptarr optionals block** — added before the Doplarr-optionals section:
    ```clojure
+   (spec/def :chaptarr/public-url string?)
    (spec/def :chaptarr/ebook-rootfolder string?)
    (spec/def :chaptarr/audiobook-rootfolder string?)
    (spec/def :chaptarr/ebook-quality-profile string?)
@@ -99,19 +101,27 @@ Optional Settings table, plus five rows in the Optional Settings table for the
 
 ### `src/doplarr/discord.clj`
 
-Two localized changes, both pure insertions (no existing lines rewritten):
+Three localized changes:
 
-1. **`request-thumbnail` map** — two entries added (`:book`, `:audiobook`)
-   reusing the Doplarr logo URL from README.md. Without these, `request-embed`
-   would emit `{:thumbnail {:url nil}}` for book requests, which Discord may
-   reject as an invalid embed.
-2. **`request-embed` signature and fields vector** — added a
+1. **`request-thumbnail` map** (additive) — two entries added (`:book`,
+   `:audiobook`) reusing the Doplarr logo URL from README.md. Without these,
+   `request-embed` would emit `{:thumbnail {:url nil}}` for book requests,
+   which Discord may reject as an invalid embed.
+2. **`request-embed` signature and fields vector** (additive) — added a
    `:metadata-profile` destructure binding and a corresponding "Metadata
    Profile" field inside the `filterv`. Chaptarr's metadata profile concept
    (edition filtering by language/format/rating/pages) does not map onto
    Sonarr's `:language-profile`, so the hardcoded "Language Profile" label
    would be misleading for book requests. The original `:language-profile`
    path is preserved for Sonarr.
+3. **`request-embed` restructured to `cond->`** (minor rewrite) — the
+   top-level map constructor was wrapped in a `cond->` so `:image` is only
+   `assoc`'d when `poster` is non-nil. Chaptarr returns relative cover paths
+   (e.g. `/MediaCoverProxy/...`) which Discord's embed validator rejects
+   with 50035 Invalid Form Body; without the guard, the book request
+   confirmation embed fails to send. Sonarr/Radarr flows still get `:image`
+   as before because their `poster` values are always absolute URLs from
+   TheMovieDB.
 
 ---
 

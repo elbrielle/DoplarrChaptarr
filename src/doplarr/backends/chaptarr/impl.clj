@@ -1,6 +1,7 @@
 (ns doplarr.backends.chaptarr.impl
   (:require
    [clojure.core.async :as a]
+   [clojure.string :as str]
    [doplarr.state :as state]
    [doplarr.utils :as utils]
    [fmnoise.flow :refer [then]]))
@@ -68,21 +69,50 @@
            first :url)
       (:remote-cover kebab)))
 
+(defn absolutify-cover-url
+  "Chaptarr returns cover paths like /MediaCoverProxy/.../...jpeg — relative to
+  the Chaptarr server. Discord's embed API rejects non-absolute URLs with a
+  50035 Invalid Form Body on the image field, so we have to either prepend a
+  publicly-reachable Chaptarr base URL or drop the image entirely.
+
+  Returns:
+  - the URL unchanged if it's already absolute (http:// or https://)
+  - CHAPTARR__PUBLIC_URL prepended (trailing slash trimmed) if the user has
+    configured a publicly-reachable Chaptarr address and the path is relative
+  - nil if the path is relative and no public URL is configured — the caller
+    should omit :image from the embed entirely rather than sending a relative
+    or null URL"
+  [url]
+  (when (string? url)
+    (cond
+      (re-find #"^https?://" url) url
+      (str/starts-with? url "/")
+      (when-let [public-url (:chaptarr/public-url @state/config)]
+        (str (str/replace public-url #"/$" "") url))
+      :else nil)))
+
+(defn- trim-or-nil [s]
+  (when (string? s)
+    (let [trimmed (str/trim s)]
+      (when-not (str/blank? trimmed) trimmed))))
+
 (defn process-book-search-result
   "Normalize Chaptarr's /book/lookup output into the shape Doplarr expects.
 
-  Chaptarr (Readarr fork) returns a book object with an embedded author. We flatten
-  the pieces needed downstream. `existing-book-id` is set only when the book is
-  already in the library (Chaptarr uses id=0 for not-yet-added books)."
+  Chaptarr (Readarr fork) returns a book object with an embedded author. We
+  flatten the pieces needed downstream. `existing-book-id` is set only when
+  the book is already in the library (Chaptarr uses id=0 for not-yet-added
+  books). Titles and author names are trimmed because Chaptarr's metadata
+  source sometimes emits leading whitespace (observed with titles like
+  \" The Book of Lost Hours\")."
   [result]
   (let [kebab (utils/from-camel result)
         existing-id (:id kebab)]
-    {:title (:title kebab)
+    {:title (trim-or-nil (:title kebab))
      :year (year-from-release-date (:release-date kebab))
      :foreign-book-id (:foreign-book-id kebab)
      :foreign-author-id (get-in kebab [:author :foreign-author-id])
-     :author-name (or (:author-title kebab)
-                      (get-in kebab [:author :author-name]))
+     :author-name (trim-or-nil (get-in kebab [:author :author-name]))
      :title-slug (:title-slug kebab)
      :overview (:overview kebab)
      :remote-cover (cover-url kebab)

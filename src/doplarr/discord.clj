@@ -114,28 +114,33 @@
   (Integer/parseInt (s/select-one [:payload :values 0] interaction)))
 
 (defn request-embed [{:keys [media-type title overview poster season quality-profile language-profile metadata-profile rootfolder]}]
-  {:title title
-   :description overview
-   :image {:url poster}
-   :thumbnail {:url (media-type request-thumbnail)}
-   :fields (filterv
-            identity
-            ; Some overrides to make things pretty
-            [(when quality-profile
-               {:name "Profile"
-                :value quality-profile})
-             (when language-profile
-               {:name "Language Profile"
-                :value language-profile})
-             (when metadata-profile
-               {:name "Metadata Profile"
-                :value metadata-profile})
-             (when season
-               {:name "Season"
-                :value (if (= season -1) "All" season)})
-             (when rootfolder
-               {:name "Root Folder"
-                :value rootfolder})])})
+  ; :image is only included when poster is a non-nil URL. A {:url nil} or
+  ; {:image nil} triggers Discord's 50035 Invalid Form Body validator on the
+  ; embed image field — notably relevant for the Chaptarr backend, which
+  ; returns relative cover paths (e.g. /MediaCoverProxy/...) that can't be
+  ; shown without a publicly-reachable base URL.
+  (cond-> {:title title
+           :description overview
+           :thumbnail {:url (media-type request-thumbnail)}
+           :fields (filterv
+                    identity
+                    ; Some overrides to make things pretty
+                    [(when quality-profile
+                       {:name "Profile"
+                        :value quality-profile})
+                     (when language-profile
+                       {:name "Language Profile"
+                        :value language-profile})
+                     (when metadata-profile
+                       {:name "Metadata Profile"
+                        :value metadata-profile})
+                     (when season
+                       {:name "Season"
+                        :value (if (= season -1) "All" season)})
+                     (when rootfolder
+                       {:name "Root Folder"
+                        :value rootfolder})])}
+    poster (assoc :image {:url poster})))
 
 (defn request [embed-data uuid]
   {:content (str "Request this " (name (:media-type embed-data)) " ?")

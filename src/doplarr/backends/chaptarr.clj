@@ -150,7 +150,7 @@
                 (str title " — " author-name)
                 title)
        :overview overview
-       :poster remote-cover
+       :poster (impl/absolutify-cover-url remote-cover)
        :media-type media-type
        :request-formats [""]
        :quality-profile (utils/name-from-id quality-profiles shown-q-id)
