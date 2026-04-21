@@ -236,6 +236,13 @@
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
           format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
           author-id (a/<! (resolve-author-id payload media-type format-paths))
+          ;; Must happen BEFORE the per-book PUT: Chaptarr silently rejects
+          ;; book-level *Monitored=true when the author's *MonitorFuture flag
+          ;; for that format is false. Idempotent — no-op on fresh author-adds
+          ;; (request-payload already set the right flag) and does real work
+          ;; on cross-format re-requests. See CHAPTARR_INTEGRATION.md §3.12.
+          _ (when author-id
+              (a/<! (impl/ensure-author-enabled-for-format author-id media-type)))
           books (when author-id (a/<! (impl/books-for-author author-id)))
           target-book (impl/preferred-book-for-format books media-type)
           current-status (when target-book (impl/status target-book media-type))]

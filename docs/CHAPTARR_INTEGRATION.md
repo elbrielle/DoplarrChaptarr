@@ -150,7 +150,7 @@ auto-monitor every book in the author's catalog. Users can change this in
 the Chaptarr UI later if they want to pull future releases from a
 newly-added author automatically.
 
-### 3.9 Cover images are relative paths
+### 3.9 Cover images are relative paths (and covers may not work without a public URL)
 
 `remoteCover` and `images[].url` on search results come back as paths like
 `/MediaCoverProxy/.../...jpeg`, relative to Chaptarr's own server. Discord
@@ -159,15 +159,32 @@ handles this in a cascade:
 
 1. If the URL is already absolute (http:// or https://) — use it directly.
 2. If `CHAPTARR__PUBLIC_URL` is configured — prepend it to the relative path.
-3. Otherwise — **download the cover bytes over `CHAPTARR__URL`** (the
-   Docker-internal URL that Doplarr can always reach) and attach them to
-   the Discord message as a file, referenced via `attachment://cover.jpeg`
+3. Otherwise — **try to download the cover bytes over `CHAPTARR__URL`**
+   (the Docker-internal URL that Doplarr can always reach) and attach them
+   to the Discord message as a file, referenced via `attachment://cover.jpeg`
    in the embed's image URL.
 
-The third path works for every homelab setup. `CHAPTARR__PUBLIC_URL` is
-still supported as a shortcut for deployments where Chaptarr is already
-reverse-proxied publicly, but it is no longer required to get cover
-images in book confirmation embeds.
+**Important caveat on path 3:** some Chaptarr builds protect
+`/MediaCoverProxy/...` behind the same Plex/session authentication as the
+rest of the UI, which means API-key auth gets a `401` and the download
+silently fails. Chaptarr 0.9.418 with Plex auth is one of these. On those
+builds, book confirmation embeds render **without a cover** unless
+`CHAPTARR__PUBLIC_URL` is set to a reverse-proxied Chaptarr (where the
+proxy handles the auth wall and rewrites image URLs to public endpoints).
+
+In practice:
+
+- Chaptarr build serves `/MediaCoverProxy/` with API-key auth: path 3 works,
+  no extra config needed.
+- Chaptarr build protects `/MediaCoverProxy/` with Plex session auth:
+  `CHAPTARR__PUBLIC_URL` is required for covers to show. The embed still
+  renders, just without the cover thumbnail.
+- Lookup results that include `remoteUrl` on images (direct upstream
+  URL from Goodreads/Hardcover): path 1 handles it automatically. Most
+  Chaptarr builds don't expose `remoteUrl` on `/book/lookup`, but a few do.
+
+The embed never fails outright from a cover issue — worst case is no
+thumbnail in the confirmation. Everything functional still works.
 
 Technical note: discljord's `edit-original-interaction-response!` doesn't
 expose Discord's multipart-upload support, so the fork does a direct
@@ -190,6 +207,48 @@ Chaptarr aggregates metadata from both Hardcover (`hc:...`) and Goodreads
 prefixed `gr:` at the nested author, then resolve it through its metadata
 server on POST and end up with `hc:` on the final author record. This is
 normal — Chaptarr doing format normalization — not a fork bug.
+
+### 3.12 Author-level `*MonitorFuture` gates per-book monitoring
+
+This one bit us hard in live testing. Chaptarr has per-format flags on
+the author record: `ebookMonitorFuture` and `audiobookMonitorFuture`.
+Their names imply "auto-monitor future books Chaptarr discovers in this
+format," but in practice they're **also a binary gate**: when
+`ebookMonitorFuture: false`, Chaptarr silently refuses any PUT that tries
+to set `ebookMonitored: true` on a book under that author, even a book
+that's already in the catalog. The Chaptarr server log on rejection reads
+`"Cannot enable ebook monitoring for book '<title>' - author '<name>' is
+not monitored for ebooks"`; the HTTP PUT itself returns 2xx and the
+caller sees no error.
+
+Live-verified against Chaptarr 0.9.418: this is how an author set up
+via the Chaptarr UI with ebook enabled ends up with
+`ebookMonitorFuture: true` even though the operator may not want every
+future ebook auto-monitored. The auto-monitor-future behavior is
+separately suppressed by the author-level `monitorNewItems: "none"`
+flag.
+
+The fork handles this:
+
+- On fresh author-add (POST /book), `request-payload` sets
+  `ebookMonitorFuture: true` for ebook requests and
+  `audiobookMonitorFuture: true` for audiobook requests. `monitorNewItems:
+  "none"` is also sent to prevent back-catalog flood.
+- On cross-format re-request against an existing author (user runs
+  `/request book Dune` then later `/request audiobook Dune`), the fork
+  calls `ensure-author-enabled-for-format` right before the per-book PUT.
+  That helper GETs the author record, checks the relevant
+  `*MonitorFuture` flag, and if it's still false, PUTs the author with
+  it flipped to true. Idempotent — no-op when the flag is already set.
+
+Side effect the operator should know about: an author added for ebook
+requests will have `ebookMonitorFuture: true` permanently. If a future
+new book by that author shows up in Chaptarr's metadata source, it may
+auto-monitor for ebook. `monitorNewItems: "none"` is the canonical
+Chaptarr flag that suppresses this, and the fork sends it — but if you
+see unwanted auto-monitoring, flip `ebookMonitorFuture: false` on the
+author in the Chaptarr UI once you've grabbed the specific book you
+wanted.
 
 ---
 
@@ -266,5 +325,7 @@ normal — Chaptarr doing format normalization — not a fork bug.
 | 2026-04-21    | addOptions.searchForNewBook unreliable | Explicit BookSearch (this commit)       |
 | 2026-04-21    | HTML in overviews                      | HTML strip (this commit)                |
 | 2026-04-21    | Relative cover paths (retry)           | Download + attach as file (Phase 2)     |
+| 2026-04-21    | Plex-auth Chaptarr 401s MediaCoverProxy | Documented — CHAPTARR__PUBLIC_URL needed |
+| 2026-04-21    | Author *MonitorFuture gates per-book PUT | ensure-author-enabled-for-format        |
 
 Add new rows when you find new surprises.

@@ -212,6 +212,43 @@
                                  :content-type :json}))
          (then (constantly nil)))))
 
+(defn get-author [author-id]
+  (utils/request-and-process-body
+   GET
+   utils/from-camel
+   (str "/author/" author-id)))
+
+(defn ensure-author-enabled-for-format
+  "Chaptarr refuses to enable per-book monitoring when the author-level
+  *MonitorFuture flag for that format is false — the PUT succeeds over
+  HTTP but the change is silently dropped, logged on the Chaptarr side
+  as 'author is not monitored for ebooks' (or audiobooks). This helper
+  fetches the author record and, if the relevant flag isn't already set,
+  PUTs the author with it flipped to true before the caller proceeds to
+  flip a specific book's monitor flag.
+
+  Idempotent — no-op when the flag is already true, which is the common
+  case for fresh author-adds (request-payload sets it based on the
+  requested format). Does real work on cross-format re-requests
+  (/request book then later /request audiobook on the same author)
+  where the author was originally added with only one format enabled.
+
+  See CHAPTARR_INTEGRATION.md §3.12."
+  [author-id media-type]
+  (a/go
+    (let [author (a/<! (get-author author-id))
+          flag-key (if (= media-type :audiobook)
+                     :audiobook-monitor-future
+                     :ebook-monitor-future)]
+      (if (get author flag-key)
+        nil
+        (let [updated (assoc author
+                             flag-key true
+                             :monitored true)]
+          (a/<! (PUT (str "/author/" author-id)
+                     {:form-params (utils/to-camel updated)
+                      :content-type :json})))))))
+
 (defn request-payload
   "Build the POST /api/v1/book body for Chaptarr, used to create the author
   and its catalog of book entities in an all-unmonitored state.
@@ -266,8 +303,15 @@
               :root-folder-path chosen-rootfolder
               :ebook-root-folder-path    ebook-rootfolder-path
               :audiobook-root-folder-path audiobook-rootfolder-path
-              :ebook-monitor-future false
-              :audiobook-monitor-future false
+              ;; *MonitorFuture is Chaptarr's author-level gate for per-book
+              ;; monitoring of that format. Setting it false makes Chaptarr
+              ;; silently reject book-level ebookMonitored=true PUTs later
+              ;; (logged as "author is not monitored for ebooks"). Enable
+              ;; it for the requested format so the post-POST PUT on the
+              ;; specific book can actually flip its monitor flag. See
+              ;; CHAPTARR_INTEGRATION.md §3.12.
+              :ebook-monitor-future     (= media-type :book)
+              :audiobook-monitor-future (= media-type :audiobook)
               :monitored true
               :monitor-new-items "none"
               :add-options {:monitor "none"
