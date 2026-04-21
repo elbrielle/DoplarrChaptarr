@@ -347,38 +347,66 @@
         :audiobook (not (:is-ebook first-edition)))
       :else false)))
 
+(defn- book-row-complete?
+  "True when a Chaptarr book row looks like a resolved edition rather than a
+  skeleton/placeholder. Chaptarr creates placeholder rows during author-add
+  before the metadata source has populated them — those rows have empty
+  images, no releaseDate, and zero ratings, and Chaptarr silently rejects
+  monitor-flag PUTs against them. Real editions have both a release date
+  and at least one image populated. See CHAPTARR_INTEGRATION.md §3.13."
+  [book]
+  (and (:release-date book)
+       (seq (:images book))))
+
 (defn- format-match-rank
-  "Score how confidently a Chaptarr book row matches the requested format.
-  Prefer explicit mediaType matches over the edition.isEbook fallback."
+  "Score how confidently a Chaptarr book row matches the requested format, and
+  how complete/resolved that row is. Higher is better. Scoring:
+
+  +10 row is a resolved edition (not a placeholder)
+   +2 explicit mediaType match
+   +1 edition.isEbook fallback match (used when mediaType field absent)
+    0 anything else
+
+  Resolved editions always outrank placeholders with the same format match."
   [book media-type]
   (let [target-mt (if (= media-type :audiobook) "audiobook" "ebook")
         media-type-field (:media-type book)
-        first-edition (first (:editions book))]
-    (cond
-      (= target-mt media-type-field) 2
-      (some? (:is-ebook first-edition))
-      (case media-type
-        :book      (if (:is-ebook first-edition) 1 0)
-        :audiobook (if (false? (:is-ebook first-edition)) 1 0)
-        0)
-      :else 0)))
+        first-edition (first (:editions book))
+        base-rank (cond
+                    (= target-mt media-type-field) 2
+                    (some? (:is-ebook first-edition))
+                    (case media-type
+                      :book      (if (:is-ebook first-edition) 1 0)
+                      :audiobook (if (false? (:is-ebook first-edition)) 1 0)
+                      0)
+                    :else 0)]
+    (+ base-rank (if (book-row-complete? book) 10 0))))
 
 (defn preferred-book-for-format
   "Choose the best Chaptarr book row for a requested format when an author has
   multiple matching editions. Preference order:
 
-  1. Explicit format match (mediaType) over edition.isEbook fallback
-  2. Higher popularity
-  3. Newer releaseDate
+  1. Resolved edition (has releaseDate + images) over placeholder row
+  2. Explicit mediaType format match over edition.isEbook fallback
+  3. Higher ratings.popularity
+  4. Higher ratings.votes (more established edition)
+  5. Newer releaseDate
 
-  This avoids blindly taking the first row returned by /book?authorId=..., the
-  ordering of which is not stable across metadata sources."
+  The popularity and votes fields live under a nested `ratings` object on
+  Chaptarr book rows, not at the top level. Placeholder rows have no ratings
+  and so collapse to all-zero for these tiebreaks, letting the resolved
+  editions win cleanly.
+
+  Avoids blindly taking the first row returned by /book?authorId=..., the
+  ordering of which is not stable across metadata sources, and prevents
+  targeting a placeholder row whose monitor PUT would be silently dropped."
   [books media-type]
   (->> books
        (filter #(book-matches-format? % media-type))
        (sort-by (fn [book]
                   [(format-match-rank book media-type)
-                   (or (:popularity book) 0)
+                   (or (get-in book [:ratings :popularity]) 0)
+                   (or (get-in book [:ratings :votes]) 0)
                    (or (:release-date book) "")]))
        last))
 

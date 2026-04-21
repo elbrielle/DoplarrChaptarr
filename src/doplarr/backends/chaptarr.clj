@@ -4,7 +4,7 @@
    [doplarr.backends.chaptarr.impl :as impl]
    [doplarr.state :as state]
    [doplarr.utils :as utils]
-   [taoensso.timbre :refer [warn]]))
+   [taoensso.timbre :refer [info warn]]))
 
 (defn- rootfolder-config-key [media-type]
   (if (= media-type :audiobook)
@@ -256,12 +256,31 @@
         ;; explicit BookSearch so Chaptarr actively grabs a release rather
         ;; than waiting for its next RSS cycle.
         target-book
-        (do
-          (a/<! (impl/PUT (str "/book/" (:id target-book))
-                          {:form-params (utils/to-camel
-                                         (impl/update-monitor-payload target-book media-type))
-                           :content-type :json}))
-          (a/<! (impl/search-book (:id target-book)))
+        (let [target-id (:id target-book)
+              candidate-count (count books)
+              matching-count (count (filter #(impl/book-matches-format? % media-type) books))
+              _ (info (str "Chaptarr request: selected book " target-id
+                           " for " (name media-type) " request ("
+                           matching-count "/" candidate-count " matching rows under author)"))
+              put-resp (a/<! (impl/PUT (str "/book/" target-id)
+                                       {:form-params (utils/to-camel
+                                                      (impl/update-monitor-payload target-book media-type))
+                                        :content-type :json}))
+              ;; Chaptarr silently 2xxs PUTs that it internally rejects
+              ;; (author gate, placeholder row, etc.). Verify the flag
+              ;; actually flipped in the PUT response body so we get a
+              ;; log signal when a future Chaptarr quirk causes a drop
+              ;; instead of waiting for "no grab happened" diagnosis.
+              updated (utils/from-camel (:body put-resp))
+              flag-key (if (= media-type :audiobook)
+                         :audiobook-monitored
+                         :ebook-monitored)]
+          (when-not (get updated flag-key)
+            (warn (str "Chaptarr silently rejected monitor flip on book " target-id
+                       " — " (name flag-key) " is still false in the PUT response. "
+                       "Likely causes: author not enabled for this format, or book row "
+                       "is a metadata placeholder. Check Chaptarr server logs.")))
+          (a/<! (impl/search-book target-id))
           nil)
 
         ;; No book entity in Chaptarr's catalog matches the requested

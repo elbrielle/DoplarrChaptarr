@@ -250,6 +250,57 @@ see unwanted auto-monitoring, flip `ebookMonitorFuture: false` on the
 author in the Chaptarr UI once you've grabbed the specific book you
 wanted.
 
+### 3.13 Chaptarr creates placeholder book rows during author-add
+
+When Chaptarr adds a new author, it creates multiple book entities in
+the same local DB transaction — not just one per edition, but sometimes
+**skeleton/placeholder rows** that haven't yet been resolved against the
+metadata source. Observed in live testing: searching for a book called
+"Orbital" under a new author produced:
+
+- **10943** — `"Orbital"`, `mediaType: "ebook"`, `images: []`, no
+  `releaseDate`, no ratings — a placeholder the metadata source hadn't
+  populated yet
+- **10945** — `"Orbital: A Novel"`, `mediaType: "ebook"`,
+  `images: [...]`, `releaseDate: "2023-12-05"`,
+  `ratings: {votes: 18667, popularity: 76534.7}` — the actual resolved
+  edition
+- **10937** — audiobook row
+
+Chaptarr silently rejects monitor-flag PUTs against placeholder rows,
+even when the author is correctly enabled for that format. The HTTP PUT
+returns 2xx; the change just doesn't persist. (Same failure mode as
+§3.12 but a different root cause.)
+
+The fork's `preferred-book-for-format` selector accounts for this:
+
+1. Filters to books whose format matches (mediaType or edition.isEbook).
+2. Among matches, gives a big ranking bonus to **resolved editions**
+   (those with both `releaseDate` set AND non-empty `images`).
+3. Among equally-resolved candidates, tiebreaks on `ratings.popularity`,
+   then `ratings.votes`, then `releaseDate`.
+
+Resolved editions always win over placeholders. If a search happens
+before Chaptarr has resolved *any* real edition (rare — metadata source
+usually populates within seconds), the fork falls back to the
+best-scoring placeholder, the monitor PUT will drop silently, and
+`chaptarr.clj/request` logs a warning. Operator signal for that
+scenario: `"Chaptarr silently rejected monitor flip on book <id>..."`
+in doplarr logs.
+
+### 3.14 Image URL availability shifts after author-add
+
+Related to §3.13 but worth noting separately: the image URLs on search
+results (`/api/v1/book/lookup`) are relative proxy paths, but on
+resolved book rows returned by `/api/v1/book?authorId=<id>`, images
+come back as **absolute upstream URLs** (e.g.
+`https://m.media-amazon.com/images/...`). This opens a potential future
+refactor where the confirmation embed's cover is fetched from the
+post-add book record instead of pre-add lookup — which would sidestep
+`/MediaCoverProxy/` authentication entirely. Not implemented yet; would
+require restructuring the interaction flow so the POST happens before
+the user confirms. Logged here for future reference.
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -327,5 +378,7 @@ wanted.
 | 2026-04-21    | Relative cover paths (retry)           | Download + attach as file (Phase 2)     |
 | 2026-04-21    | Plex-auth Chaptarr 401s MediaCoverProxy | Documented — CHAPTARR__PUBLIC_URL needed |
 | 2026-04-21    | Author *MonitorFuture gates per-book PUT | ensure-author-enabled-for-format        |
+| 2026-04-21    | Chaptarr creates placeholder book rows | Completeness boost in preferred-book ranking |
+| 2026-04-21    | PUT response silently 2xxs on rejection | Log warning from updated flag in response body |
 
 Add new rows when you find new surprises.
