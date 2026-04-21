@@ -126,6 +126,18 @@ Three localized changes:
 
 ---
 
+### `src/doplarr/interaction_state_machine.clj`
+
+One-line swap in `query-for-option-or-request`: replaced the direct
+`@(m/edit-original-interaction-response! …)` call with
+`(discord/send-request-embed! …)`. The wrapper dispatches to discljord's
+normal edit path or a multipart HTTP PATCH when the embed carries a
+`:cover-attachment` (fork addition — book covers are downloaded as bytes
+and attached to the Discord message because Chaptarr returns relative
+cover URLs that Discord's CDN can't fetch). No other lines were changed.
+
+---
+
 ## Files intentionally NOT modified
 
 - `src/doplarr/core.clj` — no changes needed; Discord-slash-command

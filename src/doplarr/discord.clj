@@ -1,11 +1,14 @@
 (ns doplarr.discord
   (:require
+   [cheshire.core :as json]
+   [clojure.core.async :as a]
    [clojure.set :as set]
    [clojure.string :as str]
    [com.rpl.specter :as s]
    [discljord.messaging :as m]
    [doplarr.utils :as utils]
    [fmnoise.flow :as flow :refer [else]]
+   [hato.client :as hc]
    [taoensso.timbre :refer [fatal]]))
 
 (defn request-command [media-types]
@@ -148,6 +151,65 @@
    :flags 64
    :components [{:type 1 :components (for [format (:request-formats embed-data)]
                                        (request-button format uuid))}]})
+
+;; ------------------------------------------------------------------
+;; Fork addition: multipart edit-original-interaction-response.
+;;
+;; discljord's edit-original-interaction-response! does not expose Discord's
+;; multipart/file upload support — only create-followup-message! does. The
+;; Chaptarr backend needs to attach book cover bytes to the confirmation
+;; embed (because Chaptarr returns relative cover paths that Discord can't
+;; fetch on its own). Rather than refactor the state machine to send a
+;; separate followup message (which would split the interaction into two
+;; bot messages), we go direct to Discord's HTTP webhook endpoint for the
+;; attachment case only; discljord is still used for every non-attachment
+;; edit.
+;;
+;; Rate limiting: discljord tracks rate limits across its own calls. This
+;; bypass is not tracked. Acceptable here because this code path runs at
+;; most once per user book request — nowhere near Discord's 50-reqs/sec
+;; interaction webhook limit.
+;; ------------------------------------------------------------------
+
+(defn- interaction-webhook-url [bot-id token]
+  (str "https://discord.com/api/v10/webhooks/" bot-id "/" token "/messages/@original"))
+
+(defn edit-original-with-attachment!
+  "Edit an interaction's initial response with a file attachment via a direct
+  multipart PATCH. Returns a channel yielding the response map on success or
+  an exception on failure — same shape as discljord's promise-based
+  helpers, so callers can use the fmnoise (else …) pattern to handle errors
+  consistently."
+  [bot-id token payload {:keys [bytes filename content-type]}]
+  (let [chan (a/promise-chan)]
+    (hc/request
+     {:method :patch
+      :url (interaction-webhook-url bot-id token)
+      :async? true
+      :version :http-1.1
+      :throw-exceptions? true
+      :multipart [{:name "payload_json"
+                   :content (json/generate-string payload)
+                   :content-type "application/json"}
+                  {:name "files[0]"
+                   :content bytes
+                   :file-name (or filename "cover.jpeg")
+                   :content-type (or content-type "image/jpeg")}]}
+     #(a/put! chan %)
+     #(a/put! chan %))
+    chan))
+
+(defn send-request-embed!
+  "Route the confirmation embed through either discljord's normal edit path
+  or the multipart-attachment direct-HTTP path, depending on whether the
+  embed data carries a :cover-attachment. Strips :cover-attachment from the
+  payload before sending so it never reaches Discord's JSON."
+  [messaging bot-id token embed uuid]
+  (if-let [attachment (:cover-attachment embed)]
+    (let [clean-embed (dissoc embed :cover-attachment)
+          payload (request clean-embed uuid)]
+      (a/<!! (edit-original-with-attachment! bot-id token payload attachment)))
+    @(m/edit-original-interaction-response! messaging bot-id token (request embed uuid))))
 
 (defn request-performed-plain [payload media-type user-id]
   {:content

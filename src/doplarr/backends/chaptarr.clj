@@ -133,6 +133,48 @@
            (= 1 (count rootfolders)) (:id (first rootfolders))
            :else                     rootfolders)}))))
 
+(defn- cover-bytes-or-nil
+  "Attempt to download cover bytes from Chaptarr so they can be attached to
+  the Discord embed as a file. Returns nil when the download fails — the
+  embed renders without a cover in that case, which is strictly better UX
+  than failing the whole request."
+  [cover-path]
+  (a/go
+    (let [result (a/<! (impl/download-cover cover-path))]
+      (when (and result (not (instance? Throwable result)))
+        result))))
+
+(defn- cover-poster-and-attachment
+  "Decide how to present the book cover in the Discord embed based on what
+  URL shape Chaptarr returned and what config is available:
+
+  - absolute http(s) URL → hand it to Discord's :image.url directly; no
+    attachment needed
+  - relative path + CHAPTARR__PUBLIC_URL set → rewrite to absolute and use
+    :image.url (same as above)
+  - relative path + no public URL → download the bytes inside Doplarr's
+    container (where Chaptarr is reachable) and attach them to the
+    interaction response; embed :image.url becomes attachment://cover.jpeg
+
+  If every path fails, the confirmation embed just omits the cover."
+  [remote-cover]
+  (a/go
+    (let [absolute (impl/absolutify-cover-url remote-cover)]
+      (cond
+        absolute
+        {:poster absolute}
+
+        (and remote-cover (.startsWith ^String remote-cover "/"))
+        (if-let [bytes (a/<! (cover-bytes-or-nil remote-cover))]
+          {:poster "attachment://cover.jpeg"
+           :cover-attachment {:bytes bytes
+                              :filename "cover.jpeg"
+                              :content-type "image/jpeg"}}
+          {:poster nil})
+
+        :else
+        {:poster nil}))))
+
 (defn request-embed [{:keys [title author-name overview remote-cover
                              ebook-quality-profile-id audiobook-quality-profile-id
                              ebook-metadata-profile-id audiobook-metadata-profile-id
@@ -144,17 +186,19 @@
           metadata-profiles (a/<! (impl/metadata-profiles))
           audiobook? (= media-type :audiobook)
           shown-q-id (if audiobook? audiobook-quality-profile-id ebook-quality-profile-id)
-          shown-m-id (if audiobook? audiobook-metadata-profile-id ebook-metadata-profile-id)]
-      {:title (if (and author-name (not (.contains (or title "") author-name)))
-                (str title " — " author-name)
-                title)
-       :overview overview
-       :poster (impl/absolutify-cover-url remote-cover)
-       :media-type media-type
-       :request-formats [""]
-       :quality-profile (utils/name-from-id quality-profiles shown-q-id)
-       :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
-       :rootfolder (utils/name-from-id rootfolders rootfolder-id)})))
+          shown-m-id (if audiobook? audiobook-metadata-profile-id ebook-metadata-profile-id)
+          cover (a/<! (cover-poster-and-attachment remote-cover))]
+      (cond-> {:title (if (and author-name (not (.contains (or title "") author-name)))
+                        (str title " — " author-name)
+                        title)
+               :overview overview
+               :poster (:poster cover)
+               :media-type media-type
+               :request-formats [""]
+               :quality-profile (utils/name-from-id quality-profiles shown-q-id)
+               :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
+               :rootfolder (utils/name-from-id rootfolders rootfolder-id)}
+        (:cover-attachment cover) (assoc :cover-attachment (:cover-attachment cover))))))
 
 (defn- resolve-format-rootfolder-paths
   "Always send both ebook and audiobook root folder paths on the author so the

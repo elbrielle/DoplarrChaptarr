@@ -4,7 +4,9 @@
    [clojure.string :as str]
    [doplarr.state :as state]
    [doplarr.utils :as utils]
-   [fmnoise.flow :refer [then]]))
+   [fmnoise.flow :refer [then]]
+   [hato.client :as hc]
+   [taoensso.timbre :refer [warn]]))
 
 (def base-url (delay (str (:chaptarr/url @state/config) "/api/v1")))
 (def api-key  (delay (:chaptarr/api @state/config)))
@@ -310,3 +312,38 @@
         kebab (utils/from-camel body)]
     (or (:author-id kebab)
         (get-in kebab [:author :id]))))
+
+(defn download-cover
+  "Fetch cover image bytes from Chaptarr's internal MediaCoverProxy endpoint.
+  Used when a cover URL is relative (i.e. CHAPTARR__PUBLIC_URL is not set)
+  so the bytes can be attached directly to the Discord embed instead of
+  asking Discord to fetch them over the public internet.
+
+  Chaptarr is always reachable at CHAPTARR__URL from Doplarr's container
+  (both live on the same Docker network), so this path works for any
+  deployment regardless of whether Chaptarr is publicly exposed.
+
+  Returns a channel yielding the byte array on success, or an exception on
+  failure. The caller should handle the exception path gracefully — a
+  failed download should not block the user's request; the confirmation
+  embed just renders without a cover."
+  [cover-path]
+  (let [chan (a/promise-chan)]
+    (hc/request
+     {:method :get
+      :url (str (:chaptarr/url @state/config) cover-path)
+      :as :byte-array
+      :async? true
+      :version :http-1.1
+      :throw-exceptions? true
+      :headers {"X-API-Key" @api-key}
+      :timeout 10000}
+     (fn [resp]
+       (if (and (bytes? (:body resp)) (pos? (alength (:body resp))))
+         (a/put! chan (:body resp))
+         (do (warn "Chaptarr returned empty cover bytes for" cover-path)
+             (a/put! chan (ex-info "empty cover body" {:cover-path cover-path})))))
+     (fn [exc]
+       (warn "Cover download failed for" cover-path (.getMessage exc))
+       (a/put! chan exc)))
+    chan))

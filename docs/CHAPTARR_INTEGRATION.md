@@ -152,14 +152,27 @@ newly-added author automatically.
 
 `remoteCover` and `images[].url` on search results come back as paths like
 `/MediaCoverProxy/.../...jpeg`, relative to Chaptarr's own server. Discord
-embeds reject non-absolute URLs with a 50035 Invalid Form Body. Set
-`CHAPTARR__PUBLIC_URL` if Chaptarr is publicly reachable; otherwise book
-confirmation embeds render without a cover.
+embeds reject non-absolute URLs with a 50035 Invalid Form Body. The fork
+handles this in a cascade:
 
-(Long-term plan: the fork will download the cover via
-`CHAPTARR__URL` — which the Doplarr container can always reach inside the
-Docker network — and attach it as a file to the Discord message, removing
-the need for `CHAPTARR__PUBLIC_URL`. Not yet implemented.)
+1. If the URL is already absolute (http:// or https://) — use it directly.
+2. If `CHAPTARR__PUBLIC_URL` is configured — prepend it to the relative path.
+3. Otherwise — **download the cover bytes over `CHAPTARR__URL`** (the
+   Docker-internal URL that Doplarr can always reach) and attach them to
+   the Discord message as a file, referenced via `attachment://cover.jpeg`
+   in the embed's image URL.
+
+The third path works for every homelab setup. `CHAPTARR__PUBLIC_URL` is
+still supported as a shortcut for deployments where Chaptarr is already
+reverse-proxied publicly, but it is no longer required to get cover
+images in book confirmation embeds.
+
+Technical note: discljord's `edit-original-interaction-response!` doesn't
+expose Discord's multipart-upload support, so the fork does a direct
+multipart HTTP PATCH to `/webhooks/{app-id}/{token}/messages/@original`
+for the attachment path. discljord's rate-limit tracking is bypassed for
+that single call; acceptable given this code path runs at most once per
+user book request.
 
 ### 3.10 HTML in book overviews
 
@@ -247,5 +260,6 @@ normal — Chaptarr doing format normalization — not a fork bug.
 | 2026-04-21    | POST monitored:true flips both formats | Two-step flow (this commit)             |
 | 2026-04-21    | addOptions.searchForNewBook unreliable | Explicit BookSearch (this commit)       |
 | 2026-04-21    | HTML in overviews                      | HTML strip (this commit)                |
+| 2026-04-21    | Relative cover paths (retry)           | Download + attach as file (Phase 2)     |
 
 Add new rows when you find new surprises.
