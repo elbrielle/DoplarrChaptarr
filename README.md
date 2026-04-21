@@ -15,7 +15,7 @@ Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / 
 - Author adds use `monitorNewItems: "none"` + `addOptions.monitor: "specificBook"` so only the requested book is monitored — Chaptarr does not pull in the author's entire back catalog
 - Both ebook and audiobook root folder paths are always set on the author record to avoid Chaptarr's "switched save locations" bug
 
-See [CHAPTARR_FORK.md](CHAPTARR_FORK.md) for the exact list of additive new files vs. localized modifications — designed so future upstream Doplarr releases can be merged with minimal friction.
+See [CHAPTARR_FORK.md](CHAPTARR_FORK.md) for the exact list of additive new files vs. localized modifications — designed so future upstream Doplarr releases can be merged with minimal friction. If you're deploying this image, also read [docs/CHAPTARR_INTEGRATION.md](docs/CHAPTARR_INTEGRATION.md) — field-verified operator notes on Chaptarr's data-model quirks, env setup, and troubleshooting.
 
 ## Quick start
 

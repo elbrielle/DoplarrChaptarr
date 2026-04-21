@@ -4,7 +4,6 @@
    [doplarr.backends.chaptarr.impl :as impl]
    [doplarr.state :as state]
    [doplarr.utils :as utils]
-   [fmnoise.flow :refer [then]]
    [taoensso.timbre :refer [warn]]))
 
 (defn- rootfolder-config-key [media-type]
@@ -167,37 +166,63 @@
     {:ebook-rootfolder-path     (or ebook-rootfolder chosen-rootfolder-path)
      :audiobook-rootfolder-path (or audiobook-rootfolder chosen-rootfolder-path)}))
 
+(defn- resolve-author-id
+  "Either look up the author of an already-indexed book, or POST a new book
+  to create the author + full catalog. Returns the author id in both cases.
+
+  Important: the POST here creates the author and all of its book entities
+  in an all-unmonitored state. Flipping the correct format's monitor flag
+  and firing the search is deliberately a separate step — see
+  CHAPTARR_INTEGRATION.md §3.6."
+  [payload media-type format-paths]
+  (a/go
+    (if-let [existing-book-id (:existing-book-id payload)]
+      (:author-id (a/<! (impl/get-book-by-id existing-book-id)))
+      (let [submit-payload (-> payload
+                               (assoc :media-type media-type)
+                               (merge format-paths))
+            post-body (utils/to-camel (impl/request-payload submit-payload))
+            resp (a/<! (impl/POST "/book" {:form-params post-body
+                                           :content-type :json}))]
+        (impl/extract-author-id resp)))))
+
 (defn request [payload media-type]
   (a/go
-    (let [{:keys [existing-book-id]} payload
-          existing (when existing-book-id
-                     (a/<! (impl/get-book-by-id existing-book-id)))
-          current-status (when existing (impl/status existing media-type))
-          rfs (a/<! (impl/rootfolders))
+    (let [rfs (a/<! (impl/rootfolders))
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
-          format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)]
+          format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
+          author-id (a/<! (resolve-author-id payload media-type format-paths))
+          books (when author-id (a/<! (impl/books-for-author author-id)))
+          target-book (first (filter #(impl/book-matches-format? % media-type) books))
+          current-status (when target-book (impl/status target-book media-type))]
       (cond
-        ;; Already monitored for this format — short-circuit with the derived status
+        ;; Already monitored and downloaded/in-progress for this format
         current-status
         current-status
 
-        ;; Book already in the library but this format isn't monitored yet.
-        ;; PUT the existing record with the requested monitor flag flipped on,
-        ;; then kick off an active BookSearch so Chaptarr grabs the new format
-        ;; rather than waiting for RSS. POSTing here would 409 in Chaptarr's
-        ;; AddBookService because the foreignBookId already exists.
-        existing
-        (->> (a/<! (impl/PUT (str "/book/" existing-book-id)
-                             {:form-params (utils/to-camel
-                                            (impl/update-monitor-payload existing media-type))
-                              :content-type :json}))
-             (then (fn [_] (impl/search-book existing-book-id))))
+        ;; Found the book entity matching the requested format — PUT it
+        ;; with monitored + the one correct format flag, then fire an
+        ;; explicit BookSearch so Chaptarr actively grabs a release rather
+        ;; than waiting for its next RSS cycle.
+        target-book
+        (do
+          (a/<! (impl/PUT (str "/book/" (:id target-book))
+                          {:form-params (utils/to-camel
+                                         (impl/update-monitor-payload target-book media-type))
+                           :content-type :json}))
+          (a/<! (impl/search-book (:id target-book)))
+          nil)
 
-        ;; Book not yet in Chaptarr — add it via POST with the full payload
+        ;; No book entity in Chaptarr's catalog matches the requested
+        ;; format. Could happen when a title is ebook-only and the user
+        ;; asked for the audiobook, or vice versa. Surface this as a
+        ;; user-facing error via the 403 branch of the state machine.
         :else
-        (let [submit-payload (-> payload
-                                 (assoc :media-type media-type)
-                                 (merge format-paths))]
-          (->> (a/<! (impl/POST "/book" {:form-params (utils/to-camel (impl/request-payload submit-payload))
-                                         :content-type :json}))
-               (then (constantly nil))))))))
+        (throw (ex-info
+                "Chaptarr has no matching format for this title"
+                {:status 403
+                 :body {"message"
+                        (str "Chaptarr doesn't have this title available as "
+                             (case media-type :audiobook "an audiobook" "an ebook")
+                             ". Try the other format, or check Chaptarr's "
+                             "metadata source for edition availability.")}}))))))
