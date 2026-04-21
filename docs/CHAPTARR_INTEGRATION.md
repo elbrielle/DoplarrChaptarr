@@ -329,6 +329,55 @@ post-add book record instead of pre-add lookup — which would sidestep
 require restructuring the interaction flow so the POST happens before
 the user confirms. Logged here for future reference.
 
+### 3.15 `PUT /book/{id}` silently drops monitor-flag changes — use `/book/monitor`
+
+Chaptarr has **two PUT endpoints** that look like they edit a book and
+do very different things:
+
+- `PUT /api/v1/book/{id}` — edits book metadata (the UI's Edit Book
+  dialog). Accepts a full kebab→camel roundtrip of the existing record
+  with fields modified. Returns 2xx with what looks like the updated
+  record. **But monitor-flag changes in this payload are silently
+  dropped** — the HTTP response reflects the new state, but the
+  persisted state keeps the old monitor flags. Chaptarr emits a
+  misleading log message in this case, e.g. "Cannot enable ebook
+  monitoring for book 'X' — author 'Y' is not monitored for ebooks",
+  even when the author gate (§3.12) is actually correct.
+
+- `PUT /api/v1/book/monitor` — bulk monitor toggle. Payload:
+  ```json
+  {"bookIds": [10982], "monitored": true}
+  ```
+  Returns `202 Accepted` with a short status snippet (NOT the updated
+  book record). Chaptarr derives which per-format flag to flip
+  (`ebookMonitored` vs `audiobookMonitored`) from the book row's own
+  `mediaType`, so the payload does not need to carry a format flag.
+  **This is the only endpoint in Chaptarr that actually persists
+  monitor changes.**
+
+**How this was confirmed.** Against author 190 / book 10982 (a real
+resolved ebook edition under an author with `ebookMonitorFuture: true`):
+
+| Step | Endpoint | Response | Persisted state |
+|---|---|---|---|
+| Before | — | — | `ebookMonitored: false` |
+| `PUT /book/10982` with flag flipped | 2xx | body shows `ebookMonitored: true` | `ebookMonitored: false` (still!) |
+| `PUT /book/monitor` `{bookIds:[10982],monitored:true}` | 202 | small status snippet | `ebookMonitored: true` ✅ |
+
+**Fork behavior.** `impl/monitor-book` calls `PUT /book/monitor`. Since
+the 202 body is not the updated record, the request flow follows up
+with `GET /book/{id}` and checks the format-specific flag before firing
+`BookSearch`. If the flag still reads false, a WARN is logged with a
+pointer back to this section — the endpoint is right, so a false-state
+result here means Chaptarr hit an unexpected internal rejection and
+the operator should capture full author + book state for diagnosis.
+
+**Do not go back to `PUT /book/{id}`** for monitor flags, even though
+it returns 2xx and a body that looks correct. It does not work.
+Upstream Doplarr's Sonarr and Radarr backends use per-resource PUTs
+and those DO persist monitor changes — this is Chaptarr-specific
+behavior, not a Readarr v1 API convention.
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -409,5 +458,6 @@ the user confirms. Logged here for future reference.
 | 2026-04-21    | Chaptarr creates placeholder book rows | Completeness boost in preferred-book ranking |
 | 2026-04-21    | PUT response silently 2xxs on rejection | Log warning from updated flag in response body |
 | 2026-04-21    | Race: placeholders only exist for ~seconds after POST | wait-for-resolved-book polls until real edition materializes |
+| 2026-04-21    | `PUT /book/{id}` silently drops monitor-flag changes | Switched to `PUT /book/monitor` (§3.15) |
 
 Add new rows when you find new surprises.

@@ -217,3 +217,11 @@ Higher-risk scenarios (not seen as of this writing):
   config defaults → single-match fallback → first profile of the right type
   → first profile overall. Keeps the Discord interaction to one dropdown max
   while still satisfying Chaptarr's four-field requirement.
+- **Monitor flips go through `PUT /book/monitor`, not `PUT /book/{id}`.**
+  Chaptarr's per-book PUT endpoint silently drops monitor-flag changes even
+  though it returns 2xx with a body that looks correct. The bulk monitor
+  endpoint (`PUT /book/monitor` with `{bookIds, monitored}`) is the only one
+  that actually persists the change. See CHAPTARR_INTEGRATION.md §3.15. Any
+  future refactor that tries to "simplify" by folding monitor toggles back
+  into the per-book PUT will silently break book requests — keep them
+  separate.

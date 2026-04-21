@@ -6,7 +6,7 @@
    [doplarr.utils :as utils]
    [fmnoise.flow :refer [then]]
    [hato.client :as hc]
-   [taoensso.timbre :refer [warn]]))
+   [taoensso.timbre :refer [info warn]]))
 
 (def base-url (delay (str (:chaptarr/url @state/config) "/api/v1")))
 (def api-key  (delay (:chaptarr/api @state/config)))
@@ -188,18 +188,31 @@
     (when monitored?
       (if (pos? file-count) :available :processing))))
 
-(defn update-monitor-payload
-  "Given an existing book record (kebab-cased, fetched via /book/{id}), return
-  a modified copy with the requested format's monitor flag flipped on and the
-  book-level monitored flag ensured true. Preserves any other format flag
-  already set so we never clobber a monitor the user established earlier."
-  [existing media-type]
-  (-> existing
-      (assoc :monitored true)
-      (assoc (if (= media-type :audiobook)
-               :audiobook-monitored
-               :ebook-monitored)
-             true)))
+(defn monitor-book
+  "Tell Chaptarr to start monitoring a book. Uses the bulk `/book/monitor`
+  endpoint — the only endpoint in this Chaptarr build that actually accepts
+  monitor-flag changes for a book row.
+
+  `PUT /book/{id}` looks like it should work (the UI's Edit Book form uses
+  it, it happily accepts our kebab→camel roundtrip of the existing record
+  with a flag flipped, and it returns 2xx with the 'updated' body) — but
+  Chaptarr silently drops the monitor change on write. That was the root
+  cause of the 'Cannot enable ebook monitoring' spurious log messages and
+  the `ebookMonitored: false` residue observed across Live Tests 3-6. See
+  CHAPTARR_INTEGRATION.md §3.15.
+
+  Chaptarr derives which per-format flag to flip (`ebookMonitored` vs
+  `audiobookMonitored`) from the book row's own `mediaType`, so the payload
+  stays minimal: just `bookIds` + `monitored`. The response is 202 Accepted
+  with a small status snippet (no updated book body), so callers must
+  follow up with a GET /book/{id} if they want to verify the flip landed."
+  [book-id]
+  (a/go
+    (let [payload {:bookIds [book-id] :monitored true}]
+      (info (str "Chaptarr monitor: PUT /book/monitor " payload))
+      (a/<! (PUT "/book/monitor"
+                 {:form-params payload
+                  :content-type :json})))))
 
 (defn search-book
   "Trigger Chaptarr's active BookSearch command for a book id. Used after a

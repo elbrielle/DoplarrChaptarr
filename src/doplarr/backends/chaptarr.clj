@@ -274,24 +274,22 @@
               _ (info (str "Chaptarr request: selected book " target-id
                            " for " (name media-type) " request ("
                            matching-count "/" candidate-count " matching rows under author)"))
-              put-resp (a/<! (impl/PUT (str "/book/" target-id)
-                                       {:form-params (utils/to-camel
-                                                      (impl/update-monitor-payload target-book media-type))
-                                        :content-type :json}))
-              ;; Chaptarr silently 2xxs PUTs that it internally rejects
-              ;; (author gate, placeholder row, etc.). Verify the flag
-              ;; actually flipped in the PUT response body so we get a
-              ;; log signal when a future Chaptarr quirk causes a drop
-              ;; instead of waiting for "no grab happened" diagnosis.
-              updated (utils/from-camel (:body put-resp))
+              _ (a/<! (impl/monitor-book target-id))
+              ;; `/book/monitor` returns 202 Accepted with only a short
+              ;; status snippet, not the updated book record, so we have
+              ;; to re-GET the book to verify the flip landed. Keeps the
+              ;; "silently rejected" warning useful for future Chaptarr
+              ;; quirks (placeholder-row drop, unexpected author gate,
+              ;; etc.) rather than waiting for "no grab happened" logs.
+              verified (a/<! (impl/get-book-by-id target-id))
               flag-key (if (= media-type :audiobook)
                          :audiobook-monitored
                          :ebook-monitored)]
-          (when-not (get updated flag-key)
+          (when-not (get verified flag-key)
             (warn (str "Chaptarr silently rejected monitor flip on book " target-id
-                       " — " (name flag-key) " is still false in the PUT response. "
-                       "Likely causes: author not enabled for this format, or book row "
-                       "is a metadata placeholder. Check Chaptarr server logs.")))
+                       " — " (name flag-key) " is still false after PUT /book/monitor. "
+                       "Unexpected under the new endpoint; capture full book + author "
+                       "state and see CHAPTARR_INTEGRATION.md §3.15.")))
           (a/<! (impl/search-book target-id))
           nil)
 
