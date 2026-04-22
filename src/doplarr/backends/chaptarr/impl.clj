@@ -142,10 +142,19 @@
   - Strip HTML tags from the overview; Chaptarr sources can contain malformed
     markup that Discord embed descriptions would render literally.
   - `existing-book-id` is set only when the book is already in the library
-    (Chaptarr uses id=0 for not-yet-added books)."
+    (Chaptarr uses id=0 for not-yet-added books).
+  - `existing-author-id` is set when the AUTHOR is already in the library
+    even if the specific edition isn't. Chaptarr's lookup populates
+    `author.id` with the real author id when the author has been added
+    before. Used downstream by `resolve-target-book!` to skip POST entirely
+    for existing authors — big-catalog authors with slow metadata refresh
+    (e.g. Brandon Sanderson, 172 books) otherwise caused 40+ second embed
+    renders while polling for a just-POSTed placeholder to resolve. See
+    §3.19."
   [result]
   (let [kebab (utils/from-camel result)
         existing-id (:id kebab)
+        existing-author (:id (:author kebab))
         raw-title (trim-or-nil (:title kebab))
         author-name (trim-or-nil (get-in kebab [:author :author-name]))
         display-title (if (and raw-title author-name)
@@ -161,7 +170,9 @@
      :overview (strip-html (:overview kebab))
      :remote-cover (cover-url kebab)
      :existing-book-id (when (and (number? existing-id) (pos? existing-id))
-                         existing-id)}))
+                         existing-id)
+     :existing-author-id (when (and (number? existing-author) (pos? existing-author))
+                           existing-author)}))
 
 (def ^:private junk-title-phrases
   "Case-insensitive substring markers that tag a `/book/lookup` result as a
@@ -541,7 +552,12 @@
   Exact-after-normalization wins. Containment either direction is a
   weaker fallback that handles subtitled editions (row 'The Women: A
   Novel' vs requested 'The Women') without catastrophically over-matching.
-  Returns false when either side is nil or empty."
+  Returns false when either side is nil or empty.
+
+  Used by `wait-for-resolved-book` polling (where we want any plausible
+  match to count as 'the book is ready') and as the widest filter in
+  `preferred-book-for-format`. See `exact-title-match?` for the stricter
+  tier that breaks ties when multiple matches are available."
   [row requested]
   (let [a (normalize-title (:title row))
         b (normalize-title requested)]
@@ -550,6 +566,24 @@
           (or (= a b)
               (str/includes? a b)
               (str/includes? b a))))))
+
+(defn- exact-title-match?
+  "Stricter variant of `title-matches?` — only the exact-after-normalization
+  case counts. Used by `preferred-book-for-format` to tier-prefer exact
+  matches over substring matches when an author has both.
+
+  Live Test 12 surfaced the Jennette McCurdy case: Chaptarr's catalog
+  had both row 11514 (title='I'm Glad My Mom Died', placeholder) and
+  row 2619 (title='I'm Glad My Mom Died By Jennette McCurdy, Fight!:
+  Thirty Years Not Quite at the Top', resolved anthology). The old
+  substring-match-and-rank logic picked 2619 because it was complete,
+  which then caused Chaptarr to search MaM for the anthology title
+  and find zero results. Preferring exact-match rows fixes this
+  class of selection error even when the exact match is a placeholder."
+  [row requested]
+  (let [a (normalize-title (:title row))
+        b (normalize-title requested)]
+    (boolean (and (seq a) (seq b) (= a b)))))
 
 (defn- format-match-rank
   "Score how confidently a Chaptarr book row matches the requested format, and
@@ -608,17 +642,28 @@
    (preferred-book-for-format books media-type nil))
   ([books media-type requested-title]
    (let [format-filtered (filter #(book-matches-format? % media-type) books)
-         title-matched (when requested-title
+         ;; Tier-based candidate selection. When an author has both an
+         ;; exact-title row AND a substring-match row (e.g. anthology
+         ;; with combined title containing the requested title), we want
+         ;; the exact match even if it's a placeholder. Without this,
+         ;; Chaptarr searches MaM for the anthology's combined title
+         ;; and finds nothing. See §3.19 / Live Test 12 Jennette case.
+         exact-matched (when requested-title
+                         (seq (filter #(exact-title-match? % requested-title)
+                                      format-filtered)))
+         title-matched (when (and requested-title (nil? exact-matched))
                          (seq (filter #(title-matches? % requested-title)
                                       format-filtered)))
-         candidates (or title-matched format-filtered)]
-     (when (and requested-title (nil? title-matched) (seq format-filtered))
+         candidates (or exact-matched title-matched format-filtered)]
+     (when (and requested-title (nil? exact-matched) (nil? title-matched)
+                (seq format-filtered))
        (warn (str "preferred-book-for-format: no " (name media-type)
                   " row matched requested title '" requested-title
-                  "' — falling back to popularity-ranked row among "
-                  (count format-filtered) " format-matching candidates. "
-                  "Chaptarr may have resolved a different canonical title "
-                  "for this request (e.g. series name → first book).")))
+                  "' (exact or substring) — falling back to popularity-"
+                  "ranked row among " (count format-filtered)
+                  " format-matching candidates. Chaptarr may have "
+                  "resolved a different canonical title for this request "
+                  "(e.g. series name → first book).")))
      (->> candidates
           (sort-by (fn [book]
                      [(format-match-rank book media-type)

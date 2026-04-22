@@ -186,17 +186,34 @@
      :audiobook-rootfolder-path (or audiobook-rootfolder chosen-rootfolder-path)}))
 
 (defn- resolve-author-id
-  "Either look up the author of an already-indexed book, or POST a new book
-  to create the author + full catalog. Returns the author id in both cases.
+  "Resolve the Chaptarr author id for this request. Three paths:
 
-  Important: the POST here creates the author and all of its book entities
-  in an all-unmonitored state. Flipping the correct format's monitor flag
-  and firing the search is deliberately a separate step — see
-  CHAPTARR_INTEGRATION.md §3.6."
+  1. `:existing-book-id` is set (lookup returned a book already indexed,
+     OR request-embed stashed it for the fast click-time path) — GET the
+     book, read author-id from it. No POST, no polling.
+  2. `:existing-author-id` is set (author is indexed but the specific
+     edition the user picked isn't) — use that id directly. No POST;
+     just read the existing catalog downstream. Skipping the POST here
+     avoids the 40+ second embed render on big-catalog authors like
+     Brandon Sanderson where polling a fresh placeholder under a
+     backlog-of-148-books author gets starved. See §3.19.
+  3. Neither set (brand-new author) — POST /book. Creates the author
+     and their full catalog as placeholders; caller polls for metadata
+     resolution.
+
+  POST always creates all books unmonitored. Flipping the correct
+  format's monitor flag and firing the search is deliberately a
+  separate step — see §3.6."
   [payload media-type format-paths]
   (a/go
-    (if-let [existing-book-id (:existing-book-id payload)]
-      (:author-id (a/<! (impl/get-book-by-id existing-book-id)))
+    (cond
+      (:existing-book-id payload)
+      (:author-id (a/<! (impl/get-book-by-id (:existing-book-id payload))))
+
+      (:existing-author-id payload)
+      (:existing-author-id payload)
+
+      :else
       (let [submit-payload (-> payload
                                (assoc :media-type media-type)
                                (merge format-paths))
@@ -225,7 +242,15 @@
     (let [rfs (a/<! (impl/rootfolders))
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
           format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
-          freshly-added? (nil? (:existing-book-id payload))
+          ;; Only poll when we actually POSTed a new author. Existing-book
+          ;; and existing-author paths hit Chaptarr's current catalog
+          ;; directly — no need to wait for metadata resolution because
+          ;; it happened (or failed) long ago. Using this narrower gate
+          ;; avoids 40+ second embed renders on prolific existing
+          ;; authors who have a placeholder for the requested edition
+          ;; (Live Test 12 Brandon Sanderson case). §3.19.
+          posted? (and (nil? (:existing-book-id payload))
+                       (nil? (:existing-author-id payload)))
           requested-title (:raw-title payload)
           author-id (a/<! (resolve-author-id payload media-type format-paths))
           ;; Chaptarr's author-add returns before the metadata source has
@@ -234,10 +259,11 @@
           ;; requested title specifically is resolved (not just any row of
           ;; the right format), otherwise a big-catalog author's backlog
           ;; books can resolve first and the ranker would pick the wrong
-          ;; title. Cross-format re-requests skip polling — books resolved
-          ;; already. See CHAPTARR_INTEGRATION.md §3.13 and §3.16.
+          ;; title. Cross-format re-requests and existing-author requests
+          ;; skip polling — books are already whatever they are in
+          ;; Chaptarr's catalog. See §3.13 and §3.16.
           books (when author-id
-                  (a/<! (if freshly-added?
+                  (a/<! (if posted?
                           (impl/wait-for-resolved-book author-id media-type requested-title)
                           (impl/books-for-author author-id))))
           target-book (impl/preferred-book-for-format books media-type requested-title)]
@@ -247,7 +273,8 @@
       ;; match the log pair to see where the divergence happened.
       (info (str "Chaptarr resolve-target-book!: media-type=" media-type
                  " existing-book-id=" (:existing-book-id payload)
-                 " freshly-added?=" freshly-added?
+                 " existing-author-id=" (:existing-author-id payload)
+                 " posted?=" posted?
                  " requested-title=" (pr-str requested-title)
                  " author-id=" author-id
                  " total-books=" (count books)

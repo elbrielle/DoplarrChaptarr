@@ -575,6 +575,70 @@ The escape hatch is direct Chaptarr UI request for anyone who
 specifically wants a study guide — Doplarr is for reading material,
 not companion material.
 
+### 3.19 Existing-author fast path + tier-preferred title matching
+
+Live Test 12 surfaced two related problems on existing, prolific
+authors:
+
+**(A) Slow embed on big-catalog existing authors.** When the lookup
+result points to an edition Chaptarr doesn't yet have but the AUTHOR
+is already indexed, the prior code would POST /book (creating a
+placeholder under the existing author) and then poll
+`wait-for-resolved-book` for the requested title to resolve. On big
+authors (Brandon Sanderson: 172 books, 148 of them ebook-format), the
+metadata refresh queue is backlogged, so the just-created placeholder
+stays a placeholder for tens of seconds and polling hits its 20-attempt
+cap. The user waited ~43 seconds for the confirmation embed, and the
+ultimately-monitored row was still a placeholder whose MaM releases
+Chaptarr's matcher rejected anyway (all 17 results filtered).
+
+**(B) Anthology/combined-title rows beating exact-title placeholders.**
+Jennette McCurdy's catalog had row 11514 (title='I'm Glad My Mom Died',
+placeholder) AND row 2619 (title='I'm Glad My Mom Died By Jennette
+McCurdy, Fight!: Thirty Years Not Quite at the Top', resolved
+anthology). The old ranker — substring-match-then-rank-by-completeness
+— picked 2619 because "resolved" outranked "placeholder". Chaptarr
+then searched MaM for the anthology's mangled title and found nothing.
+
+**Fix (A): `existing-author-id` fast path.** `process-book-search-result`
+now extracts `author.id` from lookup results as `:existing-author-id`.
+`resolve-author-id` has a new branch between the existing-book and
+POST branches: if `existing-author-id` is set, use it directly — no
+POST, no polling. `resolve-target-book!` narrows the `posted?` gate
+(previously `freshly-added?`) so polling only runs when we actually
+POSTed a brand-new author. Big existing authors go straight to
+`books-for-author` and selection, no backlog wait.
+
+**Fix (B): tier-preferred selection.** `preferred-book-for-format`
+now adds a new `exact-title-match?` predicate (exact after
+normalization only — no substring match) and uses it as a tier
+above `title-matches?`. When both tiers have candidates, exact wins
+even if the exact row is a placeholder. Tiers:
+
+1. Exact-title-match rows (if any exist) — rank by completeness + popularity
+2. Else substring-title-match rows — rank by same
+3. Else any format-matching rows — rank by same
+
+The subtitle support from `title-matches?` (row 'The Women: A Novel'
+vs requested 'The Women') is preserved because tier 1 will be empty
+in that case, so tier 2 runs. The Jennette case benefits because
+tier 1 has the exact-match placeholder (11514) and tier 2 would have
+the anthology (2619) — tier 1 takes precedence.
+
+**What can still go wrong.** If an existing author's catalog genuinely
+doesn't have any title-matched row (neither exact nor substring), the
+ranker falls through to tier 3 and picks the author's best ebook by
+popularity — which could be a completely different book. This fires
+a WARN (same one that fired before), but nothing better can be done
+without POSTing a new edition under that author — which this fix
+deliberately avoids to keep existing-author requests fast.
+
+If placeholder monitoring silently fails for the exact-match
+placeholder chosen under tier 1, the `/book/monitor` verification
+WARN in `request` fires and the operator has a clear signal (§3.15).
+Chaptarr will eventually refresh the placeholder's metadata in the
+background, and a subsequent request should then find it resolved.
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -675,5 +739,7 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-21    | Big-catalog authors' popular sibling titles out-rank requested book | Title-affinity gate in polling + ranker (§3.16) |
 | 2026-04-21    | `/MediaCoverProxy/` 401s on Plex-auth Chaptarr builds | Moved POST into request-embed so embed uses post-add absolute cover URL (§3.17) |
 | 2026-04-21    | `/book/lookup` returns study guides alongside real editions | Title-phrase filter in `lookup-book` (§3.18) |
+| 2026-04-22    | Big-catalog existing authors cause 40+s embed renders | `existing-author-id` fast path skips POST (§3.19) |
+| 2026-04-22    | Anthology/combined-title rows out-rank exact-title placeholders | Tier-preferred title matching: exact > substring (§3.19) |
 
 Add new rows when you find new surprises.

@@ -268,3 +268,26 @@ Higher-risk scenarios (not seen as of this writing):
   contain "guide", "summary", or "analysis"). See §3.18 for the list
   and rationale. If anyone actually wants a study guide, they use
   Chaptarr's UI directly.
+- **Existing-author fast path skips POST.** `process-book-search-result`
+  now extracts `:existing-author-id` from the lookup result's
+  `author.id` field. When set, `resolve-author-id` uses it directly
+  and `resolve-target-book!` skips polling — the author's catalog is
+  already whatever it is in Chaptarr, no metadata refresh race to wait
+  on. Big-catalog authors (Brandon Sanderson: 172 books) went from
+  40+ second embed renders to <2 seconds. The POST path still runs for
+  genuinely new authors. Tradeoff: if the specific edition the user
+  picked isn't in the existing author's catalog, we don't add it via
+  POST — we pick the closest title match from what's already there,
+  or fall through with a WARN. This is the right default because users
+  pick "the book" not "this specific edition" and existing-author
+  catalogs usually already have something close enough. §3.19.
+- **Tier-preferred title matching.** `preferred-book-for-format` prefers
+  exact-after-normalization matches over substring matches when both
+  exist under the same author. Prevents anthology/combined-title rows
+  from beating exact-title placeholder rows (Jennette McCurdy case:
+  an "I'm Glad My Mom Died By Jennette McCurdy, Fight!: Thirty Years…"
+  anthology row was out-ranking the exact "I'm Glad My Mom Died"
+  placeholder, and Chaptarr was then searching MaM for the anthology's
+  mangled title and finding nothing). Subtitle matching (via
+  `title-matches?`'s substring fallback) is preserved because it only
+  fires when no exact match exists. §3.19.
