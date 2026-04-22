@@ -316,18 +316,41 @@ log shows `Chaptarr request: selected book <id> for <format> request
 (N/M matching rows under author)`, and the book id is a resolved
 edition (not a `default-*` placeholder).
 
-### 3.14 Image URL availability shifts after author-add
+### 3.14 Image URL availability on resolved book rows — it depends
 
-Related to §3.13 but worth noting separately: the image URLs on search
-results (`/api/v1/book/lookup`) are relative proxy paths, but on
-resolved book rows returned by `/api/v1/book?authorId=<id>`, images
-come back as **absolute upstream URLs** (e.g.
-`https://m.media-amazon.com/images/...`). This opens a potential future
-refactor where the confirmation embed's cover is fetched from the
-post-add book record instead of pre-add lookup — which would sidestep
-`/MediaCoverProxy/` authentication entirely. Not implemented yet; would
-require restructuring the interaction flow so the POST happens before
-the user confirms. Logged here for future reference.
+`/api/v1/book/lookup` results carry relative `/MediaCoverProxy/...`
+cover paths uniformly. Resolved rows from `/api/v1/book?authorId=<id>`
+are **inconsistent**:
+
+- **Freshly-added authors** (seen with Becky Chambers, Kaliane Bradley,
+  Carley Fortune in Live Tests 7–10) came back with absolute upstream
+  URLs like `https://m.media-amazon.com/...` — Discord can fetch these
+  directly, no auth needed. The §3.17 cover refactor exploits this.
+- **Old authors** (seen with Ted Chiang, authorId 17, in Live Test 11)
+  came back with relative `/MediaCover/Books/<id>/cover.jpg?lastWrite=...`
+  paths — Chaptarr-hosted, same 401 problem as `/MediaCoverProxy/` on
+  Plex-auth builds.
+
+Why the divergence: Chaptarr's AddBook flow fetches upstream URLs from
+the metadata source when an author is first created. Over time (or
+after a Chaptarr upgrade or manual metadata refresh), those URLs can
+be replaced with internally-hosted `/MediaCover/` paths pointing to
+Chaptarr's local cache. Older authors' rows have already been through
+that rewrite.
+
+**Operational implication.** The §3.17 pre-request POST pattern
+delivers working covers for freshly-added authors but not for older
+ones whose row URLs are already relative. The only way to get covers
+working reliably across all authors on a Plex-auth Chaptarr build is
+to set `CHAPTARR__PUBLIC_URL` — that handles both relative URL shapes
+(`/MediaCoverProxy/...` from lookup, `/MediaCover/Books/.../cover.jpg`
+from resolved rows) by prepending the public base URL. See §3.9 for
+the env var, and the main README for how to expose Chaptarr publicly.
+
+**If `CHAPTARR__PUBLIC_URL` isn't set**, expect:
+- New-author requests: covers work (absolute upstream URLs).
+- Old-author requests: cover missing, `Cover download failed ... 401`
+  logged, embed otherwise fine.
 
 ### 3.15 `PUT /book/{id}` silently drops monitor-flag changes — use `/book/monitor`
 
@@ -442,10 +465,18 @@ relative cover URLs — so the fork can neither hand Discord the URL
 (Doplarr also gets 401).
 
 **Fix:** reorder the flow so POST /book runs during `request-embed`,
-not during `request`. Post-add book rows returned by
-`/book?authorId=...` carry **absolute upstream URLs** in their
+not during `request`. Freshly-added book rows returned by
+`/book?authorId=...` usually carry absolute upstream URLs in their
 images[] (e.g. `https://m.media-amazon.com/...`) that Discord can
-fetch without any auth at all. See §3.14.
+fetch without any auth at all.
+
+**Caveat — see §3.14.** This pattern delivers working covers for
+freshly-added authors but not universally: older authors' rows often
+have internally-rewritten `/MediaCover/Books/...` paths that still
+401 on Plex-auth Chaptarr builds. For full cross-author cover
+reliability, set `CHAPTARR__PUBLIC_URL`. The refactor still improves
+UX on new authors without config, and degrades gracefully
+(no-cover embed) on old ones.
 
 **New flow:**
 
