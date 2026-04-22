@@ -175,31 +175,6 @@
         :else
         {:poster nil}))))
 
-(defn request-embed [{:keys [title author-name overview remote-cover
-                             ebook-quality-profile-id audiobook-quality-profile-id
-                             ebook-metadata-profile-id audiobook-metadata-profile-id
-                             rootfolder-id]}
-                     media-type]
-  (a/go
-    (let [rootfolders (a/<! (impl/rootfolders))
-          quality-profiles (a/<! (impl/quality-profiles))
-          metadata-profiles (a/<! (impl/metadata-profiles))
-          audiobook? (= media-type :audiobook)
-          shown-q-id (if audiobook? audiobook-quality-profile-id ebook-quality-profile-id)
-          shown-m-id (if audiobook? audiobook-metadata-profile-id ebook-metadata-profile-id)
-          cover (a/<! (cover-poster-and-attachment remote-cover))]
-      (cond-> {:title (if (and author-name (not (.contains (or title "") author-name)))
-                        (str title " — " author-name)
-                        title)
-               :overview overview
-               :poster (:poster cover)
-               :media-type media-type
-               :request-formats [""]
-               :quality-profile (utils/name-from-id quality-profiles shown-q-id)
-               :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
-               :rootfolder (utils/name-from-id rootfolders rootfolder-id)}
-        (:cover-attachment cover) (assoc :cover-attachment (:cover-attachment cover))))))
-
 (defn- resolve-format-rootfolder-paths
   "Always send both ebook and audiobook root folder paths on the author so the
   requested format lands in its configured folder and the other format has a
@@ -230,7 +205,22 @@
                                            :content-type :json}))]
         (impl/extract-author-id resp)))))
 
-(defn request [payload media-type]
+(defn- resolve-target-book!
+  "POST the author (if not already indexed), wait for the specific requested
+  title to resolve, and return the target book row + author id.
+
+  Idempotent on the existing-book-id path: when the payload already carries
+  an existing-book-id (either because the book was already in Chaptarr's
+  library when the user searched, OR because request-embed already ran and
+  stashed the id back into the cached payload), we skip the POST and just
+  look up. This is the fast path used by `request` after `request-embed`
+  has pre-POSTed.
+
+  Returns a channel yielding {:author-id ..., :target-book ...}. Throws on
+  network/POST failure — callers decide whether to surface or fall back.
+
+  See CHAPTARR_INTEGRATION.md §3.17 for the request-embed integration."
+  [payload media-type]
   (a/go
     (let [rfs (a/<! (impl/rootfolders))
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
@@ -238,27 +228,99 @@
           freshly-added? (nil? (:existing-book-id payload))
           requested-title (:raw-title payload)
           author-id (a/<! (resolve-author-id payload media-type format-paths))
-          ;; Must happen BEFORE the per-book PUT: Chaptarr silently rejects
-          ;; book-level *Monitored=true when the author's *MonitorFuture flag
-          ;; for that format is false. Idempotent — no-op on fresh author-adds
-          ;; (request-payload already set the right flag) and does real work
-          ;; on cross-format re-requests. See CHAPTARR_INTEGRATION.md §3.12.
-          _ (when author-id
-              (a/<! (impl/ensure-author-enabled-for-format author-id media-type)))
           ;; Chaptarr's author-add returns before the metadata source has
           ;; materialized real edition rows — only skeleton placeholders
-          ;; exist for a few seconds. We poll /book?authorId=... until the
+          ;; exist for a few seconds. Poll /book?authorId=... until the
           ;; requested title specifically is resolved (not just any row of
           ;; the right format), otherwise a big-catalog author's backlog
           ;; books can resolve first and the ranker would pick the wrong
-          ;; title. Cross-format re-requests against an existing author
-          ;; skip polling entirely — those books are already resolved.
-          ;; See CHAPTARR_INTEGRATION.md §3.13 and §3.16.
+          ;; title. Cross-format re-requests skip polling — books resolved
+          ;; already. See CHAPTARR_INTEGRATION.md §3.13 and §3.16.
           books (when author-id
                   (a/<! (if freshly-added?
                           (impl/wait-for-resolved-book author-id media-type requested-title)
                           (impl/books-for-author author-id))))
-          target-book (impl/preferred-book-for-format books media-type requested-title)
+          target-book (impl/preferred-book-for-format books media-type requested-title)]
+      {:author-id author-id
+       :target-book target-book})))
+
+(defn request-embed [payload media-type]
+  (a/go
+    (let [{:keys [title author-name overview remote-cover
+                  ebook-quality-profile-id audiobook-quality-profile-id
+                  ebook-metadata-profile-id audiobook-metadata-profile-id
+                  rootfolder-id sm-uuid]} payload
+          rootfolders (a/<! (impl/rootfolders))
+          quality-profiles (a/<! (impl/quality-profiles))
+          metadata-profiles (a/<! (impl/metadata-profiles))
+          audiobook? (= media-type :audiobook)
+          shown-q-id (if audiobook? audiobook-quality-profile-id ebook-quality-profile-id)
+          shown-m-id (if audiobook? audiobook-metadata-profile-id ebook-metadata-profile-id)
+          ;; Do the POST + poll + pick NOW (before rendering the
+          ;; confirmation embed) so we have a resolved book row whose
+          ;; images[] carries absolute upstream URLs, not the relative
+          ;; /MediaCoverProxy/... paths that /book/lookup returns.
+          ;; Chaptarr builds with Plex auth 401 the proxy path, which
+          ;; means the only way to get a working cover in Discord is to
+          ;; use the post-add row's absolute URL. See §3.14 and §3.17.
+          ;;
+          ;; If the POST fails (network, invalid payload, etc.), degrade:
+          ;; fall back to the lookup's remote-cover path and the attach /
+          ;; public-url mitigations in `cover-poster-and-attachment`. The
+          ;; Request-click handler will re-attempt the POST and surface
+          ;; the real error to the user with a proper failure message.
+          pre-request (try
+                        (a/<! (resolve-target-book! payload media-type))
+                        (catch Throwable e
+                          (warn (str "request-embed: pre-request POST failed, "
+                                     "falling back to lookup cover URL — "
+                                     (.getMessage e)))
+                          nil))
+          target-book (:target-book pre-request)
+          ;; Absolute URL from the resolved row beats the lookup's
+          ;; relative path. Fall back to lookup if the pre-request didn't
+          ;; resolve a row (POST failed, or polling timed out without
+          ;; finding a match — which also warns in wait-for-resolved-book).
+          effective-cover (or (impl/cover-url target-book) remote-cover)
+          cover (a/<! (cover-poster-and-attachment effective-cover))]
+      ;; Stash the resolved book id back into the cached payload so the
+      ;; Request-click handler in `request` takes the existing-book-id
+      ;; fast path (skip POST, skip polling — both already done here).
+      ;; If target-book didn't resolve but the author POST succeeded,
+      ;; fall back to stashing any book id under the author — this
+      ;; prevents `request` from re-POSTing and 409-ing on duplicate
+      ;; foreignBookId. `request` will still run the selection logic,
+      ;; and by click-time Chaptarr may have finished resolving the
+      ;; requested title.
+      (when sm-uuid
+        (let [target-id (:id target-book)
+              fallback-id (when (and (not target-id) (:author-id pre-request))
+                            (:id (first (a/<! (impl/books-for-author
+                                               (:author-id pre-request))))))
+              stash-id (or target-id fallback-id)]
+          (when stash-id
+            (swap! state/cache assoc-in [sm-uuid :payload :existing-book-id] stash-id))))
+      (cond-> {:title (if (and author-name (not (.contains (or title "") author-name)))
+                        (str title " — " author-name)
+                        title)
+               :overview overview
+               :poster (:poster cover)
+               :media-type media-type
+               :request-formats [""]
+               :quality-profile (utils/name-from-id quality-profiles shown-q-id)
+               :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
+               :rootfolder (utils/name-from-id rootfolders rootfolder-id)}
+        (:cover-attachment cover) (assoc :cover-attachment (:cover-attachment cover))))))
+
+(defn request [payload media-type]
+  (a/go
+    (let [{:keys [author-id target-book]} (a/<! (resolve-target-book! payload media-type))
+          ;; Must happen BEFORE the per-book PUT: Chaptarr silently
+          ;; rejects book-level *Monitored=true when the author's
+          ;; *MonitorFuture flag for that format is false. Idempotent
+          ;; — no-op when the flag is already set. See §3.12.
+          _ (when author-id
+              (a/<! (impl/ensure-author-enabled-for-format author-id media-type)))
           current-status (when target-book (impl/status target-book media-type))]
       (cond
         ;; Already monitored and downloaded/in-progress for this format
@@ -271,14 +333,10 @@
         ;; than waiting for its next RSS cycle.
         target-book
         (let [target-id (:id target-book)
-              candidate-count (count books)
-              matching-count (count (filter #(impl/book-matches-format? % media-type) books))
-              _ (info (str "Chaptarr request: selected book " target-id
+              _ (info (str "Chaptarr request: monitoring book " target-id
                            " ('" (:title target-book) "') for "
-                           (name media-type) " request ("
-                           matching-count "/" candidate-count
-                           " format-matching rows under author; requested-title='"
-                           requested-title "')"))
+                           (name media-type) " request (requested-title='"
+                           (:raw-title payload) "')"))
               _ (a/<! (impl/monitor-book target-id))
               ;; `/book/monitor` returns 202 Accepted with only a short
               ;; status snippet, not the updated book record, so we have

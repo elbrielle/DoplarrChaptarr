@@ -45,8 +45,16 @@
     (let [{:keys [messaging bot-id]} @state/discord
           {:keys [media-type token payload]} (get @state/cache uuid)]
       (if (empty? pending-opts)
-        (let [embed (log-on-error
-                     (a/<! ((utils/media-fn media-type "request-embed") payload media-type))
+        (let [;; Pass the uuid through payload so backends can side-effect the
+              ;; cached payload from inside request-embed — the Chaptarr
+              ;; backend uses this to stash the resolved book id after its
+              ;; pre-request POST, so the Request-click handler can take the
+              ;; fast PUT+BookSearch path instead of re-POSTing. Other
+              ;; backends ignore the extra key.
+              embed (log-on-error
+                     (a/<! ((utils/media-fn media-type "request-embed")
+                            (assoc payload :sm-uuid uuid)
+                            media-type))
                      "Exception from request-embed")]
           (swap! state/cache assoc-in [uuid :embed] embed)
           ;; send-request-embed! dispatches to discljord's normal edit path or

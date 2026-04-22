@@ -428,9 +428,73 @@ the picked book's title and the requested title, so tests can confirm
 at a glance that title affinity worked:
 
 ```
-Chaptarr request: selected book 11389 ('The Women') for book request
-(82/164 format-matching rows under author; requested-title='The Women')
+Chaptarr request: monitoring book 11389 ('The Women') for book request
+(requested-title='The Women')
 ```
+
+### 3.17 POST runs at confirmation-embed render, not at Request-click
+
+On Chaptarr builds that use Plex authentication (common), the
+`/MediaCoverProxy/` endpoint rejects API-key-authenticated requests
+with 401. That endpoint is where `/book/lookup` results embed their
+relative cover URLs — so the fork can neither hand Discord the URL
+(Discord's CDN can't authenticate) nor download the bytes to attach
+(Doplarr also gets 401).
+
+**Fix:** reorder the flow so POST /book runs during `request-embed`,
+not during `request`. Post-add book rows returned by
+`/book?authorId=...` carry **absolute upstream URLs** in their
+images[] (e.g. `https://m.media-amazon.com/...`) that Discord can
+fetch without any auth at all. See §3.14.
+
+**New flow:**
+
+1. User picks lookup result → `additional-options` resolves profiles
+   + rootfolders (unchanged).
+2. User picks profile (if any pending) → `query-for-option-or-request`
+   calls `request-embed`.
+3. `request-embed` POSTs /book, polls for the requested title to
+   resolve, picks the target book row, extracts the absolute cover
+   URL from that row's images[], and stashes the resolved book id back
+   into the cached payload (via `sm-uuid`).
+4. Confirmation embed renders **with** a working cover.
+5. User clicks Request → `request` sees `:existing-book-id` in the
+   payload (stashed by step 3) and takes the fast path: just
+   `ensure-author-enabled-for-format` + `monitor-book` + `BookSearch`.
+   No re-POST, no re-polling.
+
+**Failure modes handled:**
+
+- POST fails in request-embed → WARN logs, returns embed with lookup's
+  relative cover (degrades via `CHAPTARR__PUBLIC_URL` if set, otherwise
+  no cover). User clicks Request, which re-attempts POST via the
+  normal `request` path and surfaces the real error to them with a
+  proper failure message.
+- Polling times out without finding the requested title → WARN logs
+  via `wait-for-resolved-book`, falls back to whatever rows are
+  present. `preferred-book-for-format` may return nil if nothing
+  matches; the embed renders without cover and the Request-click
+  error surfaces the same scenario.
+- sm-uuid missing from payload (shouldn't happen — state machine
+  passes it) → don't stash. `request` re-POSTs on Request-click.
+  Idempotent-ish: the second POST would 409 on foreignBookId, but
+  the author record is already present so re-lookup via existing-book
+  machinery works.
+
+**Tradeoff accepted — confirm-before-commit is gone.** In the old
+flow, clicking Cancel or letting the interaction time out left
+Chaptarr untouched. In the new flow, Chaptarr has the author added
+with all books unmonitored if the user never clicks Request. It's
+inert cruft — no downloads, no bandwidth, just a row in the author
+list that can be deleted from Chaptarr's UI. Adding a proper "delete
+author on cancel" path would require a new interaction hook in
+upstream Doplarr's state machine and is deferred.
+
+**State machine modification needed.** Passing `sm-uuid` into
+request-embed requires a one-line additive change to upstream's
+`interaction_state_machine.clj` (merging `:sm-uuid uuid` into the
+payload before the backend call). Other backends ignore the extra
+key. See CHAPTARR_FORK.md for the exact diff and merge strategy.
 
 ---
 
@@ -443,12 +507,28 @@ Chaptarr request: selected book 11389 ('The Women') for book request
    and root folders, then shows a dropdown for the requested format's quality
    profile (unless a `CHAPTARR__*_QUALITY_PROFILE` default is set in the
    env).
-4. User picks a profile. Fork shows a confirmation embed with title, stripped
-   overview, profile names, root folder, and a "Request" button.
-5. User clicks Request. Fork runs the two-step flow described in §3.6.
-6. On success: Fork posts a public "Request performed!" announcement to the
-   channel; Chaptarr starts its indexer search; a matching release should
-   appear in the download client within minutes.
+4. User picks a profile (or this step is skipped if all profiles have
+   defaults). Fork runs the **pre-request phase**: POST /book to add the
+   author + catalog, poll `/book?authorId=...` until the requested title
+   resolves to a real edition row (up to ~20s), pick the target book,
+   stash its id back into the cached payload. See §3.17 for why this
+   happens before confirmation rather than after.
+5. Fork renders the confirmation embed with title, stripped overview,
+   profile names, root folder, and a working cover image (pulled from
+   the resolved row's absolute upstream URL, see §3.14).
+6. User clicks Request. Fork takes the fast path because the book is
+   already indexed: `ensure-author-enabled-for-format`, `PUT /book/monitor`
+   (flip the requested format's flag — §3.15), and fire `BookSearch`.
+7. On success: Fork posts a public "Request performed!" announcement to
+   the channel (unless `DISCORD__REQUESTED_MSG_STYLE=:none`); Chaptarr
+   starts its indexer search; a matching release should appear in the
+   download client within minutes.
+
+**Note on the pre-request phase tradeoff.** If a user picks options but
+then closes Discord without clicking Request, the author remains in
+Chaptarr as inert cruft (no monitored books, no active downloads). This
+is the price of showing a working cover before confirmation on
+Plex-auth Chaptarr builds. See §3.17.
 
 ---
 
@@ -514,5 +594,6 @@ Chaptarr request: selected book 11389 ('The Women') for book request
 | 2026-04-21    | Race: placeholders only exist for ~seconds after POST | wait-for-resolved-book polls until real edition materializes |
 | 2026-04-21    | `PUT /book/{id}` silently drops monitor-flag changes | Switched to `PUT /book/monitor` (§3.15) |
 | 2026-04-21    | Big-catalog authors' popular sibling titles out-rank requested book | Title-affinity gate in polling + ranker (§3.16) |
+| 2026-04-21    | `/MediaCoverProxy/` 401s on Plex-auth Chaptarr builds | Moved POST into request-embed so embed uses post-add absolute cover URL (§3.17) |
 
 Add new rows when you find new surprises.

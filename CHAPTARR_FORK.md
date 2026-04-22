@@ -128,13 +128,25 @@ Three localized changes:
 
 ### `src/doplarr/interaction_state_machine.clj`
 
-One-line swap in `query-for-option-or-request`: replaced the direct
-`@(m/edit-original-interaction-response! …)` call with
-`(discord/send-request-embed! …)`. The wrapper dispatches to discljord's
-normal edit path or a multipart HTTP PATCH when the embed carries a
-`:cover-attachment` (fork addition — book covers are downloaded as bytes
-and attached to the Discord message because Chaptarr returns relative
-cover URLs that Discord's CDN can't fetch). No other lines were changed.
+Two localized changes in `query-for-option-or-request`:
+
+1. **Send-wrapper swap** — replaced the direct
+   `@(m/edit-original-interaction-response! …)` call with
+   `(discord/send-request-embed! …)`. The wrapper dispatches to
+   discljord's normal edit path or a multipart HTTP PATCH when the
+   embed carries a `:cover-attachment` (fork addition — book covers
+   may be downloaded as bytes and attached to the Discord message
+   when an absolute URL isn't available).
+2. **UUID hand-off into request-embed payload** — passes `(assoc
+   payload :sm-uuid uuid)` to the backend's `request-embed` call so
+   Chaptarr can stash its pre-POST-resolved book id back into the
+   cached payload (where the Request-click handler's `request` will
+   see it via the `:existing-book-id` fast path). Upstream backends
+   ignore the extra key. This enables §3.17's pre-request-embed POST,
+   which is the only way to get working cover images on Plex-auth
+   Chaptarr builds.
+
+No other lines were changed.
 
 ---
 
@@ -143,9 +155,6 @@ cover URLs that Discord's CDN can't fetch). No other lines were changed.
 - `src/doplarr/core.clj` — no changes needed; Discord-slash-command
   registration already reads from `config/available-media`, which picks up
   `:book` and `:audiobook` automatically once Chaptarr is configured.
-- `src/doplarr/interaction_state_machine.clj` — the state machine dispatches
-  to backend functions via `utils/media-fn`, which resolves the Chaptarr
-  namespace automatically.
 - `src/doplarr/utils.clj` — the existing `process-profile`,
   `process-rootfolders`, `from-camel`, `to-camel`, and `request-and-process-body`
   helpers are all reused directly by the Chaptarr backend. No shared helpers
@@ -235,3 +244,17 @@ Higher-risk scenarios (not seen as of this writing):
   title the user clicked). Polling waits for the requested title
   specifically to resolve; ranking constrains to title-matched rows
   first. Missing title falls back to the old behavior. See §3.16.
+- **POST happens during `request-embed`, not `request`.** The
+  confirmation embed needs an absolute cover URL so Discord can render
+  it, and the only way to get that on Plex-auth Chaptarr builds is to
+  use a post-add book row's image URL (which comes back as an absolute
+  upstream URL instead of the `/MediaCoverProxy/...` 401-gated path
+  that `/book/lookup` returns). A shared `resolve-target-book!` helper
+  is called by both `request-embed` (to drive the POST early) and
+  `request` (which becomes an idempotent fast path because the cached
+  payload now carries the resolved book id via `:existing-book-id`).
+  Side effect: closing Discord without clicking Request leaves the
+  author in Chaptarr as inert cruft — acceptable tradeoff documented
+  in §3.17. Any future refactor that tries to restore confirm-before-
+  commit must provide a new path to absolute cover URLs, or accept
+  broken covers on Plex-auth builds.

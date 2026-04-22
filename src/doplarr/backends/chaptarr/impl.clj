@@ -52,11 +52,18 @@
   (when (and (string? release-date) (>= (count release-date) 4))
     (subs release-date 0 4)))
 
-(defn- cover-url
-  "Readarr-style book lookup stores covers inside an images array, not a flat
-  remoteCover field. Preference order: explicit coverType=\"cover\" at the book
-  level, then the book's first image, then any edition cover, then the legacy
-  remoteCover field just in case a Chaptarr build still emits it."
+(defn cover-url
+  "Pull a cover URL out of a Chaptarr book-shape map (either a /book/lookup
+  result or a resolved row from /book?authorId=...). Preference order:
+  explicit coverType=\"cover\" at the book level, then the book's first
+  image, then any edition cover, then the legacy remoteCover field just
+  in case a Chaptarr build still emits it.
+
+  Shape note: for /book/lookup results the URLs are typically relative
+  /MediaCoverProxy/... paths; for resolved book rows post-POST the URLs
+  are absolute upstream URLs (e.g. https://m.media-amazon.com/...). See
+  CHAPTARR_INTEGRATION.md §3.14 and §3.17. Callers decide what to do
+  with whichever shape they get."
   [kebab]
   (or (->> (:images kebab)
            (filter #(= "cover" (:cover-type %)))
