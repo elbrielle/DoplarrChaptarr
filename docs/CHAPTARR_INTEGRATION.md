@@ -496,6 +496,54 @@ request-embed requires a one-line additive change to upstream's
 payload before the backend call). Other backends ignore the extra
 key. See CHAPTARR_FORK.md for the exact diff and merge strategy.
 
+### 3.18 `/book/lookup` returns study guides / summaries alongside real books
+
+Chaptarr's upstream metadata source indexes third-party study guides,
+summaries (SparkNotes, CliffsNotes, BookRags, SuperSummary), and
+"unauthorized companion" books as separate book entries in the same
+author's feed — or sometimes as distinct results when searching by
+title. These show up in `/book/lookup` results intermixed with the
+real editions. On a Discord dropdown capped at ~10 results, a popular
+book's three legitimate ebook editions can end up competing for space
+with four different study-guide titles, and a user who wants the
+original might not even see it in the list.
+
+**Fork behavior.** `impl/lookup-book` filters results whose titles
+contain any phrase in `junk-title-phrases` (case-insensitive substring
+match). The list is intentionally conservative — only multi-word
+phrases that essentially never appear in legitimate book titles:
+
+- "study guide" / "study guides"
+- "sparknotes" / "cliffsnotes" / "cliff notes" / "cliff's notes"
+- "bookrags" / "supersummary"
+- "summary and analysis" / "summary & analysis" / "summary of"
+- "reader's companion" / "reading companion" / "novel companion"
+- "unauthorized companion" / "unofficial companion"
+- "an unauthorized" / "an unofficial" (catches phrasings like
+  "An Unauthorized Companion to ...")
+- "conversation starters" / "discussion questions" / "quizzes and"
+- "reading guide" / "reader's guide" / "lesson plans"
+- "key takeaways" / "deep analysis" / "unofficial summary"
+
+**What's deliberately NOT filtered.** Single-word markers like `guide`,
+`summary`, `analysis`, `companion` — these appear in plenty of
+legitimate books ("A Field Guide to Birds", "Summary Judgment", "The
+Analyst", "A Companion to Beowulf"). The substring match only fires
+on multi-word phrases with near-zero false-positive rate.
+
+**Operator visibility.** When the filter drops anything, an INFO log
+fires with the drop count:
+
+```
+Chaptarr lookup: filtered 3 study-guide/summary result(s) from 12 total for 'The Women'
+```
+
+If a user ever reports a legitimate title being filtered out, grep
+the log for that message to see the count and adjust the phrase list.
+The escape hatch is direct Chaptarr UI request for anyone who
+specifically wants a study guide — Doplarr is for reading material,
+not companion material.
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -595,5 +643,6 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-21    | `PUT /book/{id}` silently drops monitor-flag changes | Switched to `PUT /book/monitor` (§3.15) |
 | 2026-04-21    | Big-catalog authors' popular sibling titles out-rank requested book | Title-affinity gate in polling + ranker (§3.16) |
 | 2026-04-21    | `/MediaCoverProxy/` 401s on Plex-auth Chaptarr builds | Moved POST into request-embed so embed uses post-add absolute cover URL (§3.17) |
+| 2026-04-21    | `/book/lookup` returns study guides alongside real editions | Title-phrase filter in `lookup-book` (§3.18) |
 
 Add new rows when you find new surprises.

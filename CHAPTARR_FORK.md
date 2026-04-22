@@ -258,3 +258,13 @@ Higher-risk scenarios (not seen as of this writing):
   in §3.17. Any future refactor that tries to restore confirm-before-
   commit must provide a new path to absolute cover URLs, or accept
   broken covers on Plex-auth builds.
+- **Study-guide / summary results filtered out of `lookup-book`.**
+  Chaptarr's upstream metadata source indexes SparkNotes, CliffsNotes,
+  BookRags, "unauthorized companion" books, etc. as separate results
+  that crowd out legitimate alternative editions in the Discord
+  dropdown. A conservative multi-word-phrase filter drops these before
+  results reach Discord. Phrase list is intentionally narrow to avoid
+  false positives (no single-word matches — plenty of legitimate books
+  contain "guide", "summary", or "analysis"). See §3.18 for the list
+  and rationale. If anyone actually wants a study guide, they use
+  Chaptarr's UI directly.

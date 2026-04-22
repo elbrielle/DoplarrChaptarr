@@ -163,10 +163,71 @@
      :existing-book-id (when (and (number? existing-id) (pos? existing-id))
                          existing-id)}))
 
+(def ^:private junk-title-phrases
+  "Case-insensitive substring markers that tag a `/book/lookup` result as a
+  study guide, summary, or unauthorized companion rather than the original
+  work. Chaptarr's upstream metadata source pulls these in alongside real
+  editions, and they crowd out legitimate alternative editions in the
+  Discord dropdown. See CHAPTARR_INTEGRATION.md §3.18.
+
+  Deliberately conservative — only multi-word phrases that essentially
+  never appear in legitimate book titles. Bare words like 'guide',
+  'summary', or 'analysis' are avoided because plenty of real books
+  contain them ('A Field Guide to ...', 'Summary Judgment', etc.).
+
+  If a user specifically wants a study guide, they can still request
+  one via Chaptarr's own UI — Doplarr is for requesting books to
+  read, not companion study material."
+  #{"study guide"
+    "study guides"
+    "sparknotes"
+    "cliffsnotes"
+    "cliff notes"
+    "cliff's notes"
+    "bookrags"
+    "supersummary"
+    "summary and analysis"
+    "summary & analysis"
+    "summary of"
+    "reader's companion"
+    "readers companion"
+    "reading companion"
+    "novel companion"
+    "unauthorized companion"
+    "unofficial companion"
+    "an unauthorized"
+    "an unofficial"
+    "conversation starters"
+    "quizzes and"
+    "discussion questions"
+    "reading guide"
+    "reader's guide"
+    "lesson plans"
+    "key takeaways"
+    "unofficial summary"
+    "deep analysis"})
+
+(defn- junk-lookup-result?
+  "True when a processed lookup result's title contains any of the
+  `junk-title-phrases` (case-insensitive). Used to drop study guides /
+  summaries from the Discord search dropdown so they don't crowd out
+  legitimate alternative editions."
+  [result]
+  (when-let [title-lower (some-> (:raw-title result) str/lower-case)]
+    (some #(str/includes? title-lower %) junk-title-phrases)))
+
 (defn lookup-book [term]
   (utils/request-and-process-body
    GET
-   #(map process-book-search-result %)
+   (fn [results]
+     (let [processed (map process-book-search-result results)
+           filtered (remove junk-lookup-result? processed)
+           dropped (- (count processed) (count filtered))]
+       (when (pos? dropped)
+         (info (str "Chaptarr lookup: filtered " dropped
+                    " study-guide/summary result(s) from "
+                    (count processed) " total for '" term "'")))
+       (vec filtered)))
    "/book/lookup"
    {:query-params {:term term}}))
 
