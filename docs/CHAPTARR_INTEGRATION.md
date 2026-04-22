@@ -600,14 +600,34 @@ anthology). The old ranker — substring-match-then-rank-by-completeness
 — picked 2619 because "resolved" outranked "placeholder". Chaptarr
 then searched MaM for the anthology's mangled title and found nothing.
 
-**Fix (A): `existing-author-id` fast path.** `process-book-search-result`
-now extracts `author.id` from lookup results as `:existing-author-id`.
-`resolve-author-id` has a new branch between the existing-book and
-POST branches: if `existing-author-id` is set, use it directly — no
-POST, no polling. `resolve-target-book!` narrows the `posted?` gate
-(previously `freshly-added?`) so polling only runs when we actually
-POSTed a brand-new author. Big existing authors go straight to
-`books-for-author` and selection, no backlog wait.
+**Fix (A): `existing-author-id` fast path via foreignAuthorId.**
+`process-book-search-result` extracts `author.id` from lookup results
+as `:existing-author-id`, but Live Test 13 revealed that Chaptarr's
+`/book/lookup` returns `author.id=0` for most results even when the
+author is indexed locally — lookup hits the external metadata source,
+not the internal library. So a second, more reliable path was added:
+`impl/find-author-by-foreign-id` fetches `/api/v1/author` and matches
+by `foreignAuthorId` (which IS populated and IS stable across
+metadata-source vs local-library).
+
+`resolve-author-id` tries paths in order:
+1. `:existing-book-id` set → GET the book, take author-id from it
+2. `:existing-author-id` set (rare) → use it directly
+3. `:foreign-author-id` matches an indexed author → use that id
+4. None of the above → POST /book (genuinely new author)
+
+`resolve-author-id` returns `{:author-id, :posted?}`.
+`resolve-target-book!` narrows the polling gate: only poll when
+`posted?` is true. Paths 1-3 skip `wait-for-resolved-book` entirely.
+
+Before this fix, Brandon Sanderson's Elantris request hit path 4
+(POST + poll) and took 40+ seconds because his 148-book backlog
+starved the fresh placeholder's metadata refresh. After the fix,
+path 3 matches immediately because Chaptarr already indexes
+Sanderson's `foreignAuthorId`.
+
+The overhead of path 3 is one `GET /author` call — roughly as expensive
+as a small JSON parse, negligible compared to saving 20-40 seconds.
 
 **Fix (B): tier-preferred selection.** `preferred-book-for-format`
 now adds a new `exact-title-match?` predicate (exact after
@@ -740,6 +760,7 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-21    | `/MediaCoverProxy/` 401s on Plex-auth Chaptarr builds | Moved POST into request-embed so embed uses post-add absolute cover URL (§3.17) |
 | 2026-04-21    | `/book/lookup` returns study guides alongside real editions | Title-phrase filter in `lookup-book` (§3.18) |
 | 2026-04-22    | Big-catalog existing authors cause 40+s embed renders | `existing-author-id` fast path skips POST (§3.19) |
+| 2026-04-22    | `/book/lookup` returns `author.id=0` even for indexed authors | `foreignAuthorId` match against `/api/v1/author` list (§3.19) |
 | 2026-04-22    | Anthology/combined-title rows out-rank exact-title placeholders | Tier-preferred title matching: exact > substring (§3.19) |
 
 Add new rows when you find new surprises.

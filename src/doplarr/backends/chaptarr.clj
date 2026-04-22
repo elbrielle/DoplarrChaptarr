@@ -186,41 +186,53 @@
      :audiobook-rootfolder-path (or audiobook-rootfolder chosen-rootfolder-path)}))
 
 (defn- resolve-author-id
-  "Resolve the Chaptarr author id for this request. Three paths:
+  "Resolve the Chaptarr author id for this request AND report whether we
+  POSTed a new author. Four paths, tried in order:
 
-  1. `:existing-book-id` is set (lookup returned a book already indexed,
-     OR request-embed stashed it for the fast click-time path) — GET the
-     book, read author-id from it. No POST, no polling.
-  2. `:existing-author-id` is set (author is indexed but the specific
-     edition the user picked isn't) — use that id directly. No POST;
-     just read the existing catalog downstream. Skipping the POST here
-     avoids the 40+ second embed render on big-catalog authors like
-     Brandon Sanderson where polling a fresh placeholder under a
-     backlog-of-148-books author gets starved. See §3.19.
-  3. Neither set (brand-new author) — POST /book. Creates the author
-     and their full catalog as placeholders; caller polls for metadata
-     resolution.
+  1. `:existing-book-id` set — lookup returned a book already indexed,
+     OR request-embed stashed it for the fast click-time path. GET the
+     book, read author-id. `:posted? false`.
+  2. `:existing-author-id` set — lookup result's `author.id` was
+     populated (rare; see §3.19). `:posted? false`.
+  3. `:foreign-author-id` matches an indexed author — the common path
+     for big existing authors whose lookup results carry `author.id=0`
+     even though the author is in the local library. Check
+     `find-author-by-foreign-id` against Chaptarr's author list; if
+     found, use that id and skip POST. `:posted? false`.
+  4. Otherwise — genuinely new author. POST /book to create the author
+     and their full catalog as placeholders. `:posted? true`, and the
+     caller should poll for metadata resolution.
 
-  POST always creates all books unmonitored. Flipping the correct
-  format's monitor flag and firing the search is deliberately a
-  separate step — see §3.6."
+  Returns a map `{:author-id <id-or-nil> :posted? <bool>}`. Never
+  throws; author-id comes back nil only if POST failed to return a
+  usable author id.
+
+  Route (3) is the fix for Live Test 13's Elantris regression where
+  existing-author-id was blank and we fell into the slow POST+poll
+  path even though Brandon Sanderson is already indexed as author 66.
+  See §3.19."
   [payload media-type format-paths]
   (a/go
     (cond
       (:existing-book-id payload)
-      (:author-id (a/<! (impl/get-book-by-id (:existing-book-id payload))))
+      {:author-id (:author-id (a/<! (impl/get-book-by-id (:existing-book-id payload))))
+       :posted? false}
 
       (:existing-author-id payload)
-      (:existing-author-id payload)
+      {:author-id (:existing-author-id payload)
+       :posted? false}
 
       :else
-      (let [submit-payload (-> payload
-                               (assoc :media-type media-type)
-                               (merge format-paths))
-            post-body (utils/to-camel (impl/request-payload submit-payload))
-            resp (a/<! (impl/POST "/book" {:form-params post-body
-                                           :content-type :json}))]
-        (impl/extract-author-id resp)))))
+      (if-let [by-fid (a/<! (impl/find-author-by-foreign-id
+                             (:foreign-author-id payload)))]
+        {:author-id by-fid :posted? false}
+        (let [submit-payload (-> payload
+                                 (assoc :media-type media-type)
+                                 (merge format-paths))
+              post-body (utils/to-camel (impl/request-payload submit-payload))
+              resp (a/<! (impl/POST "/book" {:form-params post-body
+                                             :content-type :json}))]
+          {:author-id (impl/extract-author-id resp) :posted? true})))))
 
 (defn- resolve-target-book!
   "POST the author (if not already indexed), wait for the specific requested
@@ -242,26 +254,16 @@
     (let [rfs (a/<! (impl/rootfolders))
           chosen-rootfolder-path (utils/name-from-id rfs (:rootfolder-id payload))
           format-paths (resolve-format-rootfolder-paths chosen-rootfolder-path)
-          ;; Only poll when we actually POSTed a new author. Existing-book
-          ;; and existing-author paths hit Chaptarr's current catalog
-          ;; directly — no need to wait for metadata resolution because
-          ;; it happened (or failed) long ago. Using this narrower gate
-          ;; avoids 40+ second embed renders on prolific existing
-          ;; authors who have a placeholder for the requested edition
-          ;; (Live Test 12 Brandon Sanderson case). §3.19.
-          posted? (and (nil? (:existing-book-id payload))
-                       (nil? (:existing-author-id payload)))
           requested-title (:raw-title payload)
-          author-id (a/<! (resolve-author-id payload media-type format-paths))
-          ;; Chaptarr's author-add returns before the metadata source has
-          ;; materialized real edition rows — only skeleton placeholders
-          ;; exist for a few seconds. Poll /book?authorId=... until the
-          ;; requested title specifically is resolved (not just any row of
-          ;; the right format), otherwise a big-catalog author's backlog
-          ;; books can resolve first and the ranker would pick the wrong
-          ;; title. Cross-format re-requests and existing-author requests
-          ;; skip polling — books are already whatever they are in
-          ;; Chaptarr's catalog. See §3.13 and §3.16.
+          ;; resolve-author-id returns {:author-id, :posted?}. We only
+          ;; poll when `posted?` is true — i.e. we actually POSTed a
+          ;; brand-new author. The three no-POST paths (existing-book-id,
+          ;; existing-author-id, foreignAuthorId-match against indexed
+          ;; authors) hit Chaptarr's current catalog directly; the
+          ;; metadata refresh happened or failed long ago and polling
+          ;; would just waste time. §3.19.
+          {author-id :author-id posted? :posted?}
+          (a/<! (resolve-author-id payload media-type format-paths))
           books (when author-id
                   (a/<! (if posted?
                           (impl/wait-for-resolved-book author-id media-type requested-title)
@@ -274,6 +276,7 @@
       (info (str "Chaptarr resolve-target-book!: media-type=" media-type
                  " existing-book-id=" (:existing-book-id payload)
                  " existing-author-id=" (:existing-author-id payload)
+                 " foreign-author-id=" (pr-str (:foreign-author-id payload))
                  " posted?=" posted?
                  " requested-title=" (pr-str requested-title)
                  " author-id=" author-id

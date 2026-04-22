@@ -310,6 +310,38 @@
    utils/from-camel
    (str "/author/" author-id)))
 
+(defn authors
+  "Fetch all authors currently indexed in Chaptarr (GET /api/v1/author).
+  Used by `find-author-by-foreign-id` to detect existing-author status
+  when the lookup result's embedded `author.id` is 0 — which it is for
+  most lookup results because Chaptarr's lookup queries the external
+  metadata source, not its internal library. See §3.19."
+  []
+  (utils/request-and-process-body
+   GET
+   #(map utils/from-camel %)
+   "/author"))
+
+(defn find-author-by-foreign-id
+  "Look through Chaptarr's indexed authors for one with a matching
+  `foreignAuthorId` and return its local id. Returns nil when the
+  author isn't indexed locally.
+
+  This is the critical fallback for big-catalog existing authors
+  (Brandon Sanderson, Stephen King, etc.) where `/book/lookup`'s
+  per-result `author.id` comes back as 0 even though the author is
+  indexed. Without this path, we'd POST to add the edition under a
+  new-author stub and then wait up to 20 seconds for the placeholder
+  to resolve — reintroducing the exact 40-second embed-render
+  regression seen in Live Test 13 on Elantris. See §3.19."
+  [foreign-author-id]
+  (a/go
+    (when (and foreign-author-id (string? foreign-author-id))
+      (let [result (a/<! (authors))]
+        (when (sequential? result)
+          (:id (first (filter #(= foreign-author-id (:foreign-author-id %))
+                              result))))))))
+
 (defn ensure-author-enabled-for-format
   "Chaptarr refuses to enable per-book monitoring when the author-level
   *MonitorFuture flag for that format is false — the PUT succeeds over
