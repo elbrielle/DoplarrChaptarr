@@ -241,6 +241,21 @@
                           (impl/wait-for-resolved-book author-id media-type requested-title)
                           (impl/books-for-author author-id))))
           target-book (impl/preferred-book-for-format books media-type requested-title)]
+      ;; One unified log per call so both request-embed's pre-POST and
+      ;; request's click-time calls emit traceable lines. When something
+      ;; short-circuits downstream (status=:processing, 403, etc.), we can
+      ;; match the log pair to see where the divergence happened.
+      (info (str "Chaptarr resolve-target-book!: media-type=" media-type
+                 " existing-book-id=" (:existing-book-id payload)
+                 " freshly-added?=" freshly-added?
+                 " requested-title=" (pr-str requested-title)
+                 " author-id=" author-id
+                 " total-books=" (count books)
+                 " target-book-id=" (:id target-book)
+                 " target-title=" (pr-str (:title target-book))
+                 " target-media-type=" (pr-str (:media-type target-book))
+                 " target-ebook-monitored=" (:ebook-monitored target-book)
+                 " target-audiobook-monitored=" (:audiobook-monitored target-book)))
       {:author-id author-id
        :target-book target-book})))
 
@@ -321,11 +336,41 @@
           ;; — no-op when the flag is already set. See §3.12.
           _ (when author-id
               (a/<! (impl/ensure-author-enabled-for-format author-id media-type)))
-          current-status (when target-book (impl/status target-book media-type))]
+          raw-status (when target-book (impl/status target-book media-type))
+          ;; Defensive cross-check: `impl/status` should only return
+          ;; :available/:processing when the requested-format monitor
+          ;; flag is true on the target row. If it ever returns a
+          ;; truthy value while that flag is false, something's wrong
+          ;; (stale cache, cross-format contamination, wrong target
+          ;; picked upstream) and we'd lie to the user with a "this is
+          ;; currently processing" message even though nothing is.
+          ;; Ignore the status and log a loud warning so the
+          ;; underlying bug surfaces instead of being hidden. See
+          ;; Existing-Author Regression report, 2026-04-22.
+          format-flag (when target-book
+                        (if (= media-type :audiobook)
+                          (:audiobook-monitored target-book)
+                          (:ebook-monitored target-book)))
+          current-status (cond
+                           (nil? raw-status) nil
+                           format-flag raw-status
+                           :else
+                           (do
+                             (warn (str "Chaptarr request: suppressing bogus status="
+                                        raw-status " for book " (:id target-book)
+                                        " ('" (:title target-book) "') — requested "
+                                        (name media-type) " monitor flag is false "
+                                        "(ebookMonitored=" (:ebook-monitored target-book)
+                                        ", audiobookMonitored=" (:audiobook-monitored target-book)
+                                        "). Falling through to normal PUT path."))
+                             nil))]
       (cond
         ;; Already monitored and downloaded/in-progress for this format
         current-status
-        current-status
+        (do
+          (info (str "Chaptarr request: short-circuiting on status=" current-status
+                     " for book " (:id target-book) " ('" (:title target-book) "')"))
+          current-status)
 
         ;; Found the book entity matching the requested format — PUT it
         ;; with monitored + the one correct format flag, then fire an
