@@ -345,11 +345,11 @@
 
 ;; Forward declarations — these predicates are defined below with the ranking
 ;; helpers but `wait-for-resolved-book` needs to call them inside its go-loop.
-(declare book-matches-format? book-row-complete?)
+(declare book-matches-format? book-row-complete? title-matches?)
 
 (defn wait-for-resolved-book
-  "Poll /book?authorId=... until at least one resolved edition exists for the
-  requested format, or we hit the attempt cap.
+  "Poll /book?authorId=... until the requested edition has materialized, or
+  we hit the attempt cap.
 
   Chaptarr's POST /book returns before the metadata source has fully
   resolved the author's catalog — immediately after POST, the only rows
@@ -359,34 +359,56 @@
   'author is not monitored for <format>' server-side). Real edition rows
   appear within a few seconds as Chaptarr's background refresh populates them.
 
-  This helper polls until either condition:
-  - at least one book under the author matches the requested format AND
-    passes `book-row-complete?` — return the current books list, letting
-    `preferred-book-for-format` pick the best one downstream
-  - attempt cap hit — return whatever we have so the flow still proceeds;
-    the PUT-response warning in `chaptarr.clj/request` will catch the
-    silent failure case and give the operator a clear log signal
+  Exit conditions (first wins):
+  - When a `requested-title` is provided AND at least one book under the
+    author matches both the requested format and that title AND passes
+    `book-row-complete?` — return books. Prevents early exits on
+    big-catalog authors (Live Test 8: Kristin Hannah had dozens of
+    backlog books resolve before 'The Women' did; without this guard,
+    polling would exit on those and the ranker fallback would pick the
+    wrong title).
+  - Otherwise (no title supplied, or we've already hit max-attempts and
+    still no title match), any resolved format-matching row is good
+    enough to proceed.
+  - Attempt cap hit — return whatever we have so the flow still proceeds
+    with a WARN; the PUT-response verification in `chaptarr.clj/request`
+    catches silent failures downstream.
 
   Defaults (max-attempts 20, interval-ms 1000) yield a ~20s ceiling. Well
   under Discord's 15-minute interaction auth window."
   ([author-id media-type]
-   (wait-for-resolved-book author-id media-type {}))
-  ([author-id media-type {:keys [max-attempts interval-ms]
-                          :or {max-attempts 20 interval-ms 1000}}]
+   (wait-for-resolved-book author-id media-type nil {}))
+  ([author-id media-type requested-title]
+   (wait-for-resolved-book author-id media-type requested-title {}))
+  ([author-id media-type requested-title {:keys [max-attempts interval-ms]
+                                          :or {max-attempts 20 interval-ms 1000}}]
    (a/go-loop [attempt 0]
      (let [books (a/<! (books-for-author author-id))
-           resolved-for-format (filter #(and (book-matches-format? % media-type)
-                                             (book-row-complete? %))
-                                       books)]
+           format-resolved (filter #(and (book-matches-format? % media-type)
+                                         (book-row-complete? %))
+                                   books)
+           title-resolved (when requested-title
+                            (filter #(title-matches? % requested-title)
+                                    format-resolved))
+           ;; Exit as soon as the specific requested title is resolved.
+           ;; If no title was supplied, any resolved row is fine.
+           done? (if requested-title
+                   (seq title-resolved)
+                   (seq format-resolved))]
        (cond
-         (seq resolved-for-format)
+         done?
          books
 
          (>= attempt max-attempts)
          (do (warn (str "wait-for-resolved-book: hit attempt cap ("
                         max-attempts ") for author " author-id " "
-                        (name media-type) " — Chaptarr may still be resolving "
-                        "metadata; proceeding with whatever we have"))
+                        (name media-type)
+                        (when requested-title
+                          (str " (title='" requested-title "', "
+                               (count format-resolved)
+                               " format-resolved rows exist but none matched title)"))
+                        " — Chaptarr may still be resolving metadata; "
+                        "proceeding with whatever we have"))
              books)
 
          :else
@@ -431,6 +453,36 @@
          (string? edition-id)
          (not (str/starts-with? edition-id "default-")))))
 
+(defn- normalize-title
+  "Fold a title down to a comparable form: lowercase, Unicode punctuation
+  stripped, whitespace collapsed. Lets `title-matches?` treat stylistic
+  variants as equivalent (e.g. 'Monk & Robot' vs 'Monk and Robot', 'The
+  Women: A Novel' vs 'The Women')."
+  [s]
+  (when (string? s)
+    (-> s
+        str/lower-case
+        (str/replace #"[^\p{L}\p{N}\s]" " ")
+        (str/replace #"\s+" " ")
+        str/trim)))
+
+(defn- title-matches?
+  "Does a Chaptarr book row's title match the user-requested title closely
+  enough to say 'this row is the book they asked for'?
+
+  Exact-after-normalization wins. Containment either direction is a
+  weaker fallback that handles subtitled editions (row 'The Women: A
+  Novel' vs requested 'The Women') without catastrophically over-matching.
+  Returns false when either side is nil or empty."
+  [row requested]
+  (let [a (normalize-title (:title row))
+        b (normalize-title requested)]
+    (boolean
+     (and (seq a) (seq b)
+          (or (= a b)
+              (str/includes? a b)
+              (str/includes? b a))))))
+
 (defn- format-match-rank
   "Score how confidently a Chaptarr book row matches the requested format, and
   how complete/resolved that row is. Higher is better. Scoring:
@@ -456,32 +508,56 @@
     (+ base-rank (if (book-row-complete? book) 10 0))))
 
 (defn preferred-book-for-format
-  "Choose the best Chaptarr book row for a requested format when an author has
-  multiple matching editions. Preference order:
+  "Choose the best Chaptarr book row for a requested format when an author
+  has multiple matching editions. Preference order:
 
-  1. Resolved edition (has releaseDate + images) over placeholder row
-  2. Explicit mediaType format match over edition.isEbook fallback
-  3. Higher ratings.popularity
-  4. Higher ratings.votes (more established edition)
-  5. Newer releaseDate
+  1. Row's title matches the originally-requested title (normalized).
+     Critical on big-catalog authors — without this step, a highly-popular
+     sibling title can out-rank the requested book after polling finishes
+     (Live Test 8: 'The Women' request on Kristin Hannah's catalog saw
+     'The Nightingale' selected by popularity).
+  2. Resolved edition (has releaseDate + images) over placeholder row
+  3. Explicit mediaType format match over edition.isEbook fallback
+  4. Higher ratings.popularity
+  5. Higher ratings.votes (more established edition)
+  6. Newer releaseDate
+
+  When `requested-title` is nil or no row matches it (e.g. Chaptarr's
+  lookup translated a series query to a specific title not present in the
+  catalog under that exact spelling), falls back to ranking across all
+  format-matching rows — better to target the author's most popular ebook
+  than to fail the request.
 
   The popularity and votes fields live under a nested `ratings` object on
-  Chaptarr book rows, not at the top level. Placeholder rows have no ratings
-  and so collapse to all-zero for these tiebreaks, letting the resolved
-  editions win cleanly.
+  Chaptarr book rows, not at the top level. Placeholder rows have no
+  ratings and so collapse to all-zero for these tiebreaks, letting the
+  resolved editions win cleanly.
 
   Avoids blindly taking the first row returned by /book?authorId=..., the
   ordering of which is not stable across metadata sources, and prevents
   targeting a placeholder row whose monitor PUT would be silently dropped."
-  [books media-type]
-  (->> books
-       (filter #(book-matches-format? % media-type))
-       (sort-by (fn [book]
-                  [(format-match-rank book media-type)
-                   (or (get-in book [:ratings :popularity]) 0)
-                   (or (get-in book [:ratings :votes]) 0)
-                   (or (:release-date book) "")]))
-       last))
+  ([books media-type]
+   (preferred-book-for-format books media-type nil))
+  ([books media-type requested-title]
+   (let [format-filtered (filter #(book-matches-format? % media-type) books)
+         title-matched (when requested-title
+                         (seq (filter #(title-matches? % requested-title)
+                                      format-filtered)))
+         candidates (or title-matched format-filtered)]
+     (when (and requested-title (nil? title-matched) (seq format-filtered))
+       (warn (str "preferred-book-for-format: no " (name media-type)
+                  " row matched requested title '" requested-title
+                  "' — falling back to popularity-ranked row among "
+                  (count format-filtered) " format-matching candidates. "
+                  "Chaptarr may have resolved a different canonical title "
+                  "for this request (e.g. series name → first book).")))
+     (->> candidates
+          (sort-by (fn [book]
+                     [(format-match-rank book media-type)
+                      (or (get-in book [:ratings :popularity]) 0)
+                      (or (get-in book [:ratings :votes]) 0)
+                      (or (:release-date book) "")]))
+          last))))
 
 (defn extract-author-id
   "Pull the newly-created author's id out of the POST /book response body.

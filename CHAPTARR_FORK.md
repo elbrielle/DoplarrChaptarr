@@ -225,3 +225,13 @@ Higher-risk scenarios (not seen as of this writing):
   future refactor that tries to "simplify" by folding monitor toggles back
   into the per-book PUT will silently break book requests — keep them
   separate.
+- **Title affinity gates both polling and ranking.** Chaptarr's POST /book
+  pulls the whole author catalog — 164 rows on a prolific author like
+  Kristin Hannah. Without a title gate, `wait-for-resolved-book` can exit
+  as soon as any popular backlog book resolves, and the popularity-based
+  ranker in `preferred-book-for-format` will pick that book over the user's
+  actual request. Both helpers now take an optional `requested-title`
+  (sourced from the payload's `:raw-title`, which is the lookup-result
+  title the user clicked). Polling waits for the requested title
+  specifically to resolve; ranking constrains to title-matched rows
+  first. Missing title falls back to the old behavior. See §3.16.

@@ -378,6 +378,60 @@ Upstream Doplarr's Sonarr and Radarr backends use per-resource PUTs
 and those DO persist monitor changes — this is Chaptarr-specific
 behavior, not a Readarr v1 API convention.
 
+### 3.16 Title affinity must gate selection on big-catalog authors
+
+Chaptarr's POST /book creates the author AND pulls in their entire
+catalog. For prolific authors, this is a *lot* of rows — Kristin Hannah
+surfaced 164 books, 82 of them ebook format, across dozens of decades
+of backlist. Each of those rows resolves from placeholder to real
+edition asynchronously, and the order isn't predictable.
+
+If selection ranks purely by completeness + popularity + release-date,
+the author's most famous book wins regardless of what the user asked
+for. Live Test 8 saw a `/request book query:The Women Kristin Hannah`
+request end up selecting **The Nightingale** (book 11386, popularity
+1.84M) instead of **The Women** (book 11389, popularity 1.46M) — both
+were real resolved ebook editions under the author at final state, but
+The Nightingale won the popularity tiebreak.
+
+**Two guards in the fork:**
+
+1. **Polling waits for the requested title, not just any resolved
+   format row.** `wait-for-resolved-book` takes an optional
+   `requested-title` parameter (sourced from the payload's
+   `:raw-title`, which is the pre-formatted lookup-result title the
+   user clicked on). Exit condition is flipped from "at least one
+   format-matching resolved row exists" to "at least one resolved row
+   matches both the format AND the title." Stops short-circuiting when
+   the user's specific book hasn't resolved yet but sibling backlog
+   books have.
+
+2. **Ranker filters to title-matched candidates first, then ranks.**
+   `preferred-book-for-format` takes an optional `requested-title` and
+   constrains candidates to rows passing `title-matches?` before
+   applying the completeness/popularity tiebreak. If no row matches
+   (e.g. series-name lookup case like Live Test 7's Monk & Robot →
+   A Psalm for the Wild-Built — not a bug, the dropdown result carries
+   the resolved title so it matches post-add), a WARN logs and the
+   ranker falls back across all format-matching rows.
+
+**Title normalization.** Comparison goes through `normalize-title`:
+lowercase, Unicode-punctuation stripped, whitespace collapsed. Handles
+stylistic variation like "Monk & Robot" vs "Monk and Robot" and
+subtitled editions like "The Women: A Novel" vs "The Women". Does
+exact-after-normalization first, then substring either direction, then
+fails. Not a fuzzy matcher — if the row's title is genuinely
+different, we want the fallback path, not a false match.
+
+**The user-visible log line** on successful selection includes both
+the picked book's title and the requested title, so tests can confirm
+at a glance that title affinity worked:
+
+```
+Chaptarr request: selected book 11389 ('The Women') for book request
+(82/164 format-matching rows under author; requested-title='The Women')
+```
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -459,5 +513,6 @@ behavior, not a Readarr v1 API convention.
 | 2026-04-21    | PUT response silently 2xxs on rejection | Log warning from updated flag in response body |
 | 2026-04-21    | Race: placeholders only exist for ~seconds after POST | wait-for-resolved-book polls until real edition materializes |
 | 2026-04-21    | `PUT /book/{id}` silently drops monitor-flag changes | Switched to `PUT /book/monitor` (§3.15) |
+| 2026-04-21    | Big-catalog authors' popular sibling titles out-rank requested book | Title-affinity gate in polling + ranker (§3.16) |
 
 Add new rows when you find new surprises.
