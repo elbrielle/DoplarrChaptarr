@@ -15,7 +15,7 @@ Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / 
 - Author adds use `monitorNewItems: "none"` + `addOptions.monitor: "specificBook"` so only the requested book is monitored — Chaptarr does not pull in the author's entire back catalog
 - Both ebook and audiobook root folder paths are always set on the author record to avoid Chaptarr's "switched save locations" bug
 
-See [CHAPTARR_FORK.md](CHAPTARR_FORK.md) for the exact list of additive new files vs. localized modifications — designed so future upstream Doplarr releases can be merged with minimal friction. If you're deploying this image, also read [docs/CHAPTARR_INTEGRATION.md](docs/CHAPTARR_INTEGRATION.md) — field-verified operator notes on Chaptarr's data-model quirks, env setup, and troubleshooting.
+See [FORK_NOTES.md](FORK_NOTES.md) for the exact list of additive new files vs. localized modifications — designed so future upstream Doplarr releases can be merged with minimal friction. If you're deploying this image, also read [docs/CHAPTARR_INTEGRATION.md](docs/CHAPTARR_INTEGRATION.md) — field-verified operator notes on Chaptarr's data-model quirks, env setup, and troubleshooting.
 
 ## Quick start
 
@@ -114,7 +114,7 @@ git fetch upstream
 git merge upstream/main
 ```
 
-All modifications in this fork are purely additive insertions into a small set of upstream files — conflicts during merge should be mechanical. [CHAPTARR_FORK.md](CHAPTARR_FORK.md) documents each modification block and where to re-apply it if the upstream surface shifts.
+All modifications in this fork are purely additive insertions into a small set of upstream files — conflicts during merge should be mechanical. [FORK_NOTES.md](FORK_NOTES.md) documents each modification block and where to re-apply it if the upstream surface shifts.
 
 ## Credits
 

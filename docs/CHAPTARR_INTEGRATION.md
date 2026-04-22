@@ -494,7 +494,7 @@ upstream Doplarr's state machine and is deferred.
 request-embed requires a one-line additive change to upstream's
 `interaction_state_machine.clj` (merging `:sm-uuid uuid` into the
 payload before the backend call). Other backends ignore the extra
-key. See CHAPTARR_FORK.md for the exact diff and merge strategy.
+key. See FORK_NOTES.md for the exact diff and merge strategy.
 
 ### 3.18 `/book/lookup` returns study guides / summaries alongside real books
 

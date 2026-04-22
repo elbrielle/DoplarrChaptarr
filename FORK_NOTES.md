@@ -20,7 +20,7 @@ touch them.
 | `src/doplarr/backends/chaptarr.clj` | Public backend API — `search`, `additional-options`, `request-embed`, `request` |
 | `src/doplarr/backends/chaptarr/impl.clj` | HTTP client, payload construction, existing-book status logic |
 | `docs/CHAPTARR_INTEGRATION.md` | Operator-facing notes on Chaptarr quirks and troubleshooting |
-| `CHAPTARR_FORK.md` | This file |
+| `FORK_NOTES.md` | This file |
 
 ---
 
