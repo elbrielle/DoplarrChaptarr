@@ -268,22 +268,26 @@ Higher-risk scenarios (not seen as of this writing):
   contain "guide", "summary", or "analysis"). See §3.18 for the list
   and rationale. If anyone actually wants a study guide, they use
   Chaptarr's UI directly.
-- **Existing-author fast path via foreignAuthorId match.** Chaptarr's
+- **Existing-author fast path with layered detection.** Chaptarr's
   `/book/lookup` returns `author.id=0` for most results even when the
   author is indexed locally — lookup queries the external metadata
-  source, not the library. So `resolve-author-id` can't rely on
-  `author.id` alone. It falls through to a `foreignAuthorId` match
-  against `GET /api/v1/author` (new `impl/find-author-by-foreign-id`
-  helper). For big-catalog authors (Brandon Sanderson: 172 books,
-  148 ebook rows), this cuts embed renders from 40+ seconds to
-  <2 seconds because we skip POST + polling entirely. The POST path
+  source, not the library. So `resolve-author-id` layers:
+  (1) `foreignAuthorId` exact-match against `GET /api/v1/author`
+  (works when lookup's metadata source agrees with stored library),
+  then (2) normalized author-name match on single-result (handles
+  cross-provider cases: Brandon Sanderson stored as `hc:204214`
+  Hardcover but looked up as `gr:38550` Goodreads). Multi-match
+  name collisions return nil to avoid wrong-author resolution on
+  common names. Implemented in `impl/find-existing-author`. Cuts
+  embed renders from 40+ seconds to <2 seconds on big-catalog
+  authors because we skip POST + polling entirely. The POST path
   still runs for genuinely new authors. Tradeoff: if the specific
   edition the user picked isn't in the existing author's catalog, we
-  don't add it via POST — we pick the closest title match from what's
-  already there, or fall through with a WARN. This is the right
-  default because users pick "the book" not "this specific edition"
-  and existing-author catalogs usually already have something close
-  enough. §3.19.
+  don't add it via POST — we pick the closest title match from
+  what's already there, or fall through with a WARN. This is the
+  right default because users pick "the book" not "this specific
+  edition" and existing-author catalogs usually already have
+  something close enough. §3.19.
 - **Tier-preferred title matching.** `preferred-book-for-format` prefers
   exact-after-normalization matches over substring matches when both
   exist under the same author. Prevents anthology/combined-title rows

@@ -600,34 +600,60 @@ anthology). The old ranker — substring-match-then-rank-by-completeness
 — picked 2619 because "resolved" outranked "placeholder". Chaptarr
 then searched MaM for the anthology's mangled title and found nothing.
 
-**Fix (A): `existing-author-id` fast path via foreignAuthorId.**
-`process-book-search-result` extracts `author.id` from lookup results
-as `:existing-author-id`, but Live Test 13 revealed that Chaptarr's
-`/book/lookup` returns `author.id=0` for most results even when the
-author is indexed locally — lookup hits the external metadata source,
-not the internal library. So a second, more reliable path was added:
-`impl/find-author-by-foreign-id` fetches `/api/v1/author` and matches
-by `foreignAuthorId` (which IS populated and IS stable across
-metadata-source vs local-library).
+**Fix (A): `existing-author-id` fast path with cross-provider matching.**
+Three layered detections because each has blind spots:
+
+Layer 1 — `process-book-search-result` extracts `author.id` from
+lookup results as `:existing-author-id`. This rarely fires because
+Chaptarr's `/book/lookup` returns `author.id=0` for most results
+(lookup queries the external metadata source, not the internal
+library).
+
+Layer 2 — `impl/find-existing-author` fetches `/api/v1/author` and
+matches by `foreignAuthorId`. Works when lookup's metadata source
+agrees with Chaptarr's on the author's provider ID. Live Test 14
+showed this isn't always true: Brandon Sanderson was stored as
+`hc:204214` (Hardcover provider) but lookup returned Elantris with
+`gr:38550` (Goodreads provider) — same author, different provider
+namespace, exact-ID match failed.
+
+Layer 3 — fallback to normalized author-name match, **only when
+exactly one indexed author has that name**. Multi-match names
+(common like "John Smith") return nil rather than risk resolving
+to the wrong author. For unique names like "Brandon Sanderson"
+this reliably bridges provider-namespace gaps.
 
 `resolve-author-id` tries paths in order:
 1. `:existing-book-id` set → GET the book, take author-id from it
-2. `:existing-author-id` set (rare) → use it directly
-3. `:foreign-author-id` matches an indexed author → use that id
+2. `:existing-author-id` set (rare — layer 1) → use it directly
+3. `find-existing-author` matches (layers 2 & 3) → use that id
 4. None of the above → POST /book (genuinely new author)
 
-`resolve-author-id` returns `{:author-id, :posted?}`.
+`resolve-author-id` returns `{:author-id, :posted?, :via}` where
+`:via` is one of `:existing-book-id`, `:existing-author-id`,
+`:foreign-author-id`, `:author-name`, or `:post`.
 `resolve-target-book!` narrows the polling gate: only poll when
 `posted?` is true. Paths 1-3 skip `wait-for-resolved-book` entirely.
+The `via=` field appears in the diagnostic log line so operator can
+see which detection layer fired.
 
 Before this fix, Brandon Sanderson's Elantris request hit path 4
 (POST + poll) and took 40+ seconds because his 148-book backlog
 starved the fresh placeholder's metadata refresh. After the fix,
-path 3 matches immediately because Chaptarr already indexes
-Sanderson's `foreignAuthorId`.
+path 3 (via author-name match) resolves immediately.
 
-The overhead of path 3 is one `GET /author` call — roughly as expensive
-as a small JSON parse, negligible compared to saving 20-40 seconds.
+The overhead of layers 2+3 is one `GET /author` call — roughly as
+expensive as a small JSON parse, negligible compared to saving 20-40
+seconds on every big-author lookup.
+
+**Known limitation.** Two indexed authors with the exact same name
+in Chaptarr (e.g. two "John Smith" author records for different
+writers) will cause layer 3 to return nil, falling through to POST.
+This is the safe-by-default behavior — resolving to the wrong John
+Smith would be a worse failure than the slow path. If this becomes
+a real issue, the next level would be title-context matching (does
+the lookup result's book title appear in any specific John Smith's
+catalog?), but that's speculative optimization until it's observed.
 
 **Fix (B): tier-preferred selection.** `preferred-book-for-format`
 now adds a new `exact-title-match?` predicate (exact after
@@ -761,6 +787,7 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-21    | `/book/lookup` returns study guides alongside real editions | Title-phrase filter in `lookup-book` (§3.18) |
 | 2026-04-22    | Big-catalog existing authors cause 40+s embed renders | `existing-author-id` fast path skips POST (§3.19) |
 | 2026-04-22    | `/book/lookup` returns `author.id=0` even for indexed authors | `foreignAuthorId` match against `/api/v1/author` list (§3.19) |
+| 2026-04-22    | Lookup and library disagree on provider namespace (gr: vs hc:) | Normalized author-name fallback on single-match (§3.19) |
 | 2026-04-22    | Anthology/combined-title rows out-rank exact-title placeholders | Tier-preferred title matching: exact > substring (§3.19) |
 
 Add new rows when you find new surprises.

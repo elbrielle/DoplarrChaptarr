@@ -312,7 +312,7 @@
 
 (defn authors
   "Fetch all authors currently indexed in Chaptarr (GET /api/v1/author).
-  Used by `find-author-by-foreign-id` to detect existing-author status
+  Used by `find-existing-author` to detect existing-author status
   when the lookup result's embedded `author.id` is 0 — which it is for
   most lookup results because Chaptarr's lookup queries the external
   metadata source, not its internal library. See §3.19."
@@ -322,25 +322,57 @@
    #(map utils/from-camel %)
    "/author"))
 
-(defn find-author-by-foreign-id
-  "Look through Chaptarr's indexed authors for one with a matching
-  `foreignAuthorId` and return its local id. Returns nil when the
-  author isn't indexed locally.
+(defn- normalize-author-name
+  "Fold an author name for equality comparison: lowercase, collapse
+  whitespace, strip surrounding whitespace. Used by
+  `find-existing-author` to match lookup-result authors against
+  indexed ones when foreignAuthorId differs across provider
+  namespaces. See §3.19."
+  [s]
+  (when (string? s)
+    (-> s
+        str/lower-case
+        (str/replace #"\s+" " ")
+        str/trim)))
 
-  This is the critical fallback for big-catalog existing authors
-  (Brandon Sanderson, Stephen King, etc.) where `/book/lookup`'s
-  per-result `author.id` comes back as 0 even though the author is
-  indexed. Without this path, we'd POST to add the edition under a
-  new-author stub and then wait up to 20 seconds for the placeholder
-  to resolve — reintroducing the exact 40-second embed-render
-  regression seen in Live Test 13 on Elantris. See §3.19."
-  [foreign-author-id]
+(defn find-existing-author
+  "Look up Chaptarr's indexed authors for a match against a lookup
+  result's author. Returns `{:id ..., :via <path-keyword>}` on match,
+  or nil when no match.
+
+  Match strategy, in order:
+  1. **foreignAuthorId equality** (`:via :foreign-author-id`). Cheapest
+     and least ambiguous. Works when Chaptarr's stored provider-id
+     agrees with the lookup's — usually true for freshly-added
+     authors.
+  2. **Normalized author-name, single match** (`:via :author-name`).
+     Fallback for when lookup and stored library disagree on
+     provider-id (Live Test 14 surfaced Brandon Sanderson stored as
+     `hc:204214` but looked up as `gr:38550` — same author, different
+     metadata source). Only fires when exactly one indexed author
+     matches the name; multi-matches return nil rather than risk
+     resolving to the wrong author on common names.
+
+  Returns nil on multi-name-match (ambiguous) or no-match (genuinely
+  new author). Caller should POST in those cases."
+  [foreign-author-id author-name]
   (a/go
-    (when (and foreign-author-id (string? foreign-author-id))
-      (let [result (a/<! (authors))]
-        (when (sequential? result)
-          (:id (first (filter #(= foreign-author-id (:foreign-author-id %))
-                              result))))))))
+    (let [result (a/<! (authors))]
+      (when (sequential? result)
+        (let [by-fid (when (and foreign-author-id (string? foreign-author-id))
+                       (first (filter #(= foreign-author-id (:foreign-author-id %))
+                                      result)))]
+          (cond
+            by-fid
+            {:id (:id by-fid) :via :foreign-author-id}
+
+            :else
+            (let [target (normalize-author-name author-name)
+                  by-name (when (seq target)
+                            (filter #(= target (normalize-author-name (:author-name %)))
+                                    result))]
+              (when (= 1 (count by-name))
+                {:id (:id (first by-name)) :via :author-name}))))))))
 
 (defn ensure-author-enabled-for-format
   "Chaptarr refuses to enable per-book monitoring when the author-level
