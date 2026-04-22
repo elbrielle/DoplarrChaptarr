@@ -304,6 +304,33 @@
                                  :content-type :json}))
          (then (constantly nil)))))
 
+(defn refresh-author
+  "Fire Chaptarr's RefreshAuthor command. Tells Chaptarr to re-pull the
+  full catalog for this author from its upstream metadata source
+  (Hardcover / Goodreads / AudiMeta) and re-apply the metadata profile's
+  edition filters.
+
+  Used to try resolving skeleton placeholder rows — rows with
+  `default-*` foreignEditionIds, null releaseDate, and empty images —
+  into real editions. Chaptarr treats metadata as author-level, so a
+  per-book refresh isn't a reliable fix (community reports of
+  `RefreshBook` throwing 'Error occurred while executing task' errors
+  confirm this). RefreshAuthor re-pulls everything for the author at
+  once.
+
+  Mildly destructive: RefreshAuthor re-applies the author's metadata
+  profile language filters and can cull editions, so only fire it when
+  the current target is a placeholder (nothing useful to cull). See
+  §3.20 and the `all_book_editions_but_one_deleted_upon_refresh`
+  community thread."
+  [author-id]
+  (a/go
+    (info (str "Chaptarr command: RefreshAuthor authorId=" author-id))
+    (->> (a/<! (POST "/command" {:form-params {:name "RefreshAuthor"
+                                               :authorId author-id}
+                                 :content-type :json}))
+         (then (constantly nil)))))
+
 (defn get-author [author-id]
   (utils/request-and-process-body
    GET
@@ -576,7 +603,7 @@
         :audiobook (not (:is-ebook first-edition)))
       :else false)))
 
-(defn- book-row-complete?
+(defn book-row-complete?
   "True when a Chaptarr book row looks like a resolved edition rather than a
   skeleton/placeholder. Chaptarr creates placeholder rows during author-add
   before the metadata source has populated them — those rows have empty
@@ -588,7 +615,11 @@
   A row is considered resolved when ALL of these hold:
   - releaseDate is set
   - images[] is non-empty
-  - foreignEditionId is present and does not start with \"default-\""
+  - foreignEditionId is present and does not start with \"default-\"
+
+  Public because chaptarr.clj's placeholder remediation path needs to
+  decide whether the target-book just picked is resolvable-as-is or
+  needs a RefreshAuthor kick."
   [book]
   (let [edition-id (:foreign-edition-id book)]
     (and (:release-date book)

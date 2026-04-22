@@ -356,9 +356,84 @@
                :rootfolder (utils/name-from-id rootfolders rootfolder-id)}
         (:cover-attachment cover) (assoc :cover-attachment (:cover-attachment cover))))))
 
+(defn- remediate-placeholder-target!
+  "Fire Chaptarr's author-level RefreshAuthor command and poll until the
+  requested title resolves into a non-placeholder row, or the cap trips.
+  Returns a re-selected target-book (newly resolved) on success, or nil
+  if the placeholder state persists.
+
+  Why this exists: Chaptarr's POST /book returns immediately but the
+  upstream metadata source (Hardcover / Goodreads / AudiMeta) may take
+  seconds to populate real edition data. If metadata never arrives
+  during that initial window, the author's catalog keeps a row with
+  `foreignEditionId = \"default-NNNN\"`, empty images, null releaseDate.
+  Later requests for that same title re-hit the stale placeholder, and
+  if it was ever monitored (by a prior retry) we'd short-circuit the
+  request with a generic 'this is currently processing' message even
+  though nothing is actually processing. This helper gives Chaptarr one
+  more chance to pull real metadata before we surface a clearer failure
+  to the user. See CHAPTARR_INTEGRATION.md §3.20."
+  [author-id media-type requested-title]
+  (a/go
+    (info (str "Chaptarr remediate-placeholder-target!: firing RefreshAuthor "
+               "on author-id=" author-id " for title=" (pr-str requested-title)
+               " — current target is an unresolved placeholder"))
+    (a/<! (impl/refresh-author author-id))
+    (let [books (a/<! (impl/wait-for-resolved-book
+                       author-id media-type requested-title
+                       {:max-attempts 20 :interval-ms 1000}))
+          remediated (impl/preferred-book-for-format
+                      books media-type requested-title)]
+      (if (impl/book-row-complete? remediated)
+        (do
+          (info (str "Chaptarr remediate-placeholder-target!: resolved — "
+                     "new target-book-id=" (:id remediated)
+                     " target-title=" (pr-str (:title remediated))
+                     " foreign-edition-id=" (pr-str (:foreign-edition-id remediated))))
+          remediated)
+        (do
+          (warn (str "Chaptarr remediate-placeholder-target!: RefreshAuthor did "
+                     "not resolve a complete row for title="
+                     (pr-str requested-title) " within the cap — metadata "
+                     "source likely cannot supply this edition. "
+                     "target-book-id=" (:id remediated)
+                     " foreign-edition-id=" (pr-str (:foreign-edition-id remediated))))
+          nil)))))
+
+(defn- placeholder-unresolved-error
+  "Build the ex-info thrown when placeholder remediation fails. Surfaces a
+  clearer message than the generic :processing short-circuit so the user
+  knows the request didn't silently disappear into Chaptarr's queue."
+  [media-type]
+  (ex-info
+   "Chaptarr has only a placeholder row for this book and couldn't resolve it"
+   {:status 403
+    :body {"message"
+           (str "Chaptarr has a placeholder for this "
+                (case media-type :audiobook "audiobook" "ebook")
+                " but the metadata source hasn't supplied a real edition "
+                "for it. Open the author's page in Chaptarr and trigger a "
+                "manual Refresh — if it still won't resolve, the upstream "
+                "source (Hardcover / Goodreads / AudiMeta) may be rate-"
+                "limited or not carrying this edition.")}}))
+
 (defn request [payload media-type]
   (a/go
     (let [{:keys [author-id target-book]} (a/<! (resolve-target-book! payload media-type))
+          requested-title (:raw-title payload)
+          ;; If selection landed on a placeholder row, give Chaptarr a
+          ;; chance to resolve it via author-level refresh BEFORE we
+          ;; read its monitor state. Otherwise stale-monitored
+          ;; placeholders short-circuit to a misleading :processing
+          ;; message (Live Test 15: Brandon Sanderson / Elantris). See
+          ;; §3.20 for the full rationale.
+          target-book (if (and target-book (not (impl/book-row-complete? target-book)))
+                        (let [remediated (a/<! (remediate-placeholder-target!
+                                                author-id media-type requested-title))]
+                          (when-not remediated
+                            (throw (placeholder-unresolved-error media-type)))
+                          remediated)
+                        target-book)
           ;; Must happen BEFORE the per-book PUT: Chaptarr silently
           ;; rejects book-level *Monitored=true when the author's
           ;; *MonitorFuture flag for that format is false. Idempotent

@@ -298,3 +298,22 @@ Higher-risk scenarios (not seen as of this writing):
   mangled title and finding nothing). Subtitle matching (via
   `title-matches?`'s substring fallback) is preserved because it only
   fires when no exact match exists. §3.19.
+- **Placeholder remediation via `RefreshAuthor`.** When target selection
+  lands on an unresolved placeholder row (empty images, null
+  releaseDate, `foreignEditionId` starting with `default-`), the
+  request path fires a Chaptarr `RefreshAuthor` command and polls for
+  the requested title to resolve before deciding whether to
+  short-circuit. Why: stale monitored placeholders used to yield a
+  generic "this is currently processing" message (from `status` reading
+  the stale `ebookMonitored=true` state) for requests that weren't
+  actually in flight. Why author-level refresh and not book-level:
+  Chaptarr's metadata model is author-centric — the community support
+  Discord confirms this and reports of `RefreshBook` throwing
+  "Error occurred while executing task" errors match. On timeout, the
+  user gets a clearer error pointing them at Chaptarr's author-page
+  Refresh button and the upstream metadata source. Gated on
+  `(not book-row-complete?)` because `RefreshAuthor` can cull
+  editions per the metadata profile — safe only when the target has
+  no editions to lose. Implemented in
+  `chaptarr.clj/remediate-placeholder-target!` + `impl/refresh-author`.
+  §3.20.

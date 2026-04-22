@@ -685,6 +685,68 @@ WARN in `request` fires and the operator has a clear signal (§3.15).
 Chaptarr will eventually refresh the placeholder's metadata in the
 background, and a subsequent request should then find it resolved.
 
+### 3.20 Placeholder remediation via RefreshAuthor
+
+Live Test 15 surfaced the edge case §3.19's tier 1 leaves open:
+what if the **only** title-matched row in the author's catalog is a
+placeholder (no resolved row exists alongside it)? Brandon
+Sanderson's Elantris produced this state — two placeholder rows
+(`default-11537` unmonitored, `default-11538` monitored), no real
+Elantris edition under the author. Tier 1 selection correctly
+landed on the monitored placeholder (11538), which then triggered
+the `status=:processing` short-circuit (§3.13 read on stale state),
+and the user got a misleading "this is currently processing"
+message for a request that actually wasn't processing anything.
+
+**The remediation path.** When `chaptarr.clj/request` picks a target
+book that fails `book-row-complete?`, it fires Chaptarr's
+`RefreshAuthor` command and polls for the requested title to resolve
+into a real edition — same `wait-for-resolved-book` plumbing the
+fresh-author path uses, capped at ~20s. Two outcomes:
+
+- **Resolved within cap**: re-select via `preferred-book-for-format`,
+  swap the remediated book in as the new target, continue with
+  normal monitor-flip + BookSearch flow.
+- **Still placeholder after cap**: throw an `ex-info` with a clearer
+  user-facing message — "Chaptarr has a placeholder for this book
+  but the metadata source hasn't supplied a real edition for it.
+  Open the author's page in Chaptarr and trigger a manual Refresh."
+  Skips the misleading `:processing` short-circuit entirely.
+
+**Why RefreshAuthor and not RefreshBook.** Chaptarr's metadata model
+is author-centric. The Chaptarr community support Discord is
+explicit: metadata comes from Hardcover / Goodreads / AudiMeta at
+the author level, and `RefreshAuthor` re-pulls the whole catalog.
+Community reports of `RefreshBook` failing with "Error occurred
+while executing task RefreshBook" and the maintainer's standard
+advice ("ask the bot to do a refresh of the data") both point to
+author-level refresh as the only reliable unstick path. See the
+exported threads `all_book_editions_but_one_deleted_upon_refresh`
+and `null_value_on_source_for_author`.
+
+**The destructive-refresh caveat.** `RefreshAuthor` re-applies the
+author's metadata profile language filters and can cull editions —
+the `all_book_editions_but_one_deleted_upon_refresh` thread
+documents cases where refresh strips all editions except one
+primary. This is why we gate the refresh behind
+`(not (book-row-complete? target-book))`: if the target is already
+resolved, we don't fire a refresh that could delete adjacent
+editions. Placeholders have no editions worth protecting, so the
+refresh is safe there.
+
+**What this does not fix.**
+- Duplicate placeholder creation. Brandon's catalog held BOTH
+  `default-11537` and `default-11538` — two separate placeholders
+  for the same title, suggesting an earlier POST path either didn't
+  de-duplicate or Chaptarr itself minted a second row on a retry.
+  This fork does not reap the stale placeholder; an operator can
+  delete it in Chaptarr's UI if it bothers them.
+- Upstream metadata gaps. If Hardcover / Goodreads / AudiMeta
+  genuinely don't carry an edition for the requested title (e.g.
+  the title is a series query Chaptarr resolved to a name no
+  provider recognizes), no refresh will help. The new error
+  message tells the operator where to look next.
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -789,5 +851,6 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-22    | `/book/lookup` returns `author.id=0` even for indexed authors | `foreignAuthorId` match against `/api/v1/author` list (§3.19) |
 | 2026-04-22    | Lookup and library disagree on provider namespace (gr: vs hc:) | Normalized author-name fallback on single-match (§3.19) |
 | 2026-04-22    | Anthology/combined-title rows out-rank exact-title placeholders | Tier-preferred title matching: exact > substring (§3.19) |
+| 2026-04-22    | Stale monitored placeholder rows yield a misleading `:processing` message | Fire `RefreshAuthor` + poll before short-circuiting, clearer error on timeout (§3.20) |
 
 Add new rows when you find new surprises.
