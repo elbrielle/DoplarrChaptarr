@@ -761,6 +761,62 @@ we meant to show. Returning the Throwable explicitly forces it
 onto the channel so the state machine's `else` branch can route
 the body's `message` to Discord as an ephemeral response.
 
+### 3.21 Long-running Request clicks need visible progress
+
+Live Test 17 confirmed the placeholder-remediation path routes its
+403 body to Discord correctly — but the user experience was still
+broken. On the Brandon/Elantris case specifically, the
+`RefreshAuthor` command pulls Chaptarr's upstream metadata source
+for a large author catalog (Sanderson: 280 books, 2729 editions) and
+can take 50–60 seconds to complete. While that blocking work ran,
+the confirmation embed sat unchanged in Discord with the Request
+button still visible. The user saw nothing happening, re-clicked the
+Request button, and Discord's second-interaction handling produced
+the generic "This interaction failed" banner.
+
+**The root mismatch.** The upstream Doplarr interaction pattern
+assumes a Request click is a sub-second operation: ACK the
+component interaction silently (response type 6,
+`DEFERRED_UPDATE_MESSAGE`), do the backend work, edit the original
+interaction response with the final message. That's correct for
+Radarr/Sonarr/Overseerr where the request is a single quick HTTP
+POST. It's wrong for Chaptarr's placeholder-remediation path, which
+is a 60-second metadata-pull job.
+
+**The fix.** `process-event! "request"` in
+`interaction_state_machine.clj` now emits one `msg-resp` call
+*immediately* after the letfn definition, **before** the blocking
+`(a/<!! ...)` on the backend's request channel. `msg-resp` uses
+`discord/content-response` which produces `{:content ..., :flags 64,
+:embeds [], :components []}` — the `:components []` wipes the
+Request/Cancel buttons from the message. Three effects:
+
+- **The user sees the click took effect.** The embed is replaced
+  with a plain "Working on your request…" text, so the state
+  transition is visible even if the backend takes a minute.
+- **Duplicate clicks are impossible.** Without the Request button
+  in the message, the user physically can't re-click. A narrow
+  race window remains in the tens of milliseconds between click
+  and the edit landing, but that's small enough not to matter in
+  practice.
+- **Chaptarr-specific wording.** For `media-type` in `#{:book
+  :audiobook}` the message explicitly warns the refresh can take up
+  to a minute for large author catalogs. Other backends get a
+  shorter generic "Working on your request…" and a brief flash
+  before the final reply lands — no observable UX regression on
+  the fast path.
+
+**What this does not fix.**
+- **Rapid double-tap race.** If a user double-clicks fast enough
+  that the second click's interaction arrives before the progress
+  edit lands on Discord's side, both clicks will trigger concurrent
+  request flows. Cache-level in-flight tracking would close this;
+  separate change if it ever surfaces in practice.
+- **60-second refresh latency itself.** No amount of UX polish
+  makes Chaptarr's upstream metadata source respond faster. The
+  progress message reframes the wait as "the system is working on
+  your request" rather than "the system is broken."
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -867,5 +923,6 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-22    | Anthology/combined-title rows out-rank exact-title placeholders | Tier-preferred title matching: exact > substring (§3.19) |
 | 2026-04-22    | Stale monitored placeholder rows yield a misleading `:processing` message | Fire `RefreshAuthor` + poll before short-circuiting, clearer error on timeout (§3.20) |
 | 2026-04-23    | Exceptions thrown mid-go-continuation leak to worker thread, Discord hangs | Wrap `request` body in `try`+`(catch e e)` to force exceptions onto the channel (§3.20) |
+| 2026-04-23    | Long `RefreshAuthor` makes Request clicks look broken, users re-click | Progress-message edit before blocking request take strips the button + narrates the wait (§3.21) |
 
 Add new rows when you find new surprises.

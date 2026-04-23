@@ -108,6 +108,30 @@
         {:keys [user-id channel-id]} interaction]
     (letfn [(msg-resp [msg] (->> @(m/edit-original-interaction-response! messaging bot-id token (discord/content-response msg))
                                  (else #(fatal % "Error in message response"))))]
+      ;; Immediately replace the confirmation embed with a progress
+      ;; message. Three effects matter:
+      ;;  - User sees the click took effect (the current silent ACK
+      ;;    leaves the confirmation embed unchanged until the request
+      ;;    finishes, which on the Chaptarr placeholder-remediation
+      ;;    path is up to 60s — Live Test 17 showed users re-clicking
+      ;;    and then seeing Discord's generic 'This interaction failed'
+      ;;    because the second click landed on a stale component).
+      ;;  - `discord/content-response` returns `:components []`, so the
+      ;;    Request/Cancel buttons are stripped from the message. The
+      ;;    user physically cannot re-click, which closes the
+      ;;    duplicate-click pathway entirely (narrow race in the
+      ;;    initial tens of ms before this edit lands remains; track
+      ;;    separately if it surfaces).
+      ;;  - For book/audiobook requests specifically, tell the user
+      ;;    the slow path exists so 'it's taking a while' doesn't feel
+      ;;    like a bug. Other backends (Sonarr/Radarr/Overseerr) are
+      ;;    fast enough that the generic message is fine.
+      (msg-resp (if (contains? #{:book :audiobook} media-type)
+                  (str "Working on your Chaptarr request… Chaptarr may be "
+                       "pulling metadata for this author from its upstream "
+                       "source, which can take up to a minute for large "
+                       "catalogs. This message will update when it's done.")
+                  "Working on your request…"))
       (->>  (log-on-error
              (a/<!! ((utils/media-fn media-type "request")
                      (assoc payload :format (keyword format) :discord-id user-id)

@@ -128,25 +128,38 @@ Three localized changes:
 
 ### `src/doplarr/interaction_state_machine.clj`
 
-Two localized changes in `query-for-option-or-request`:
+Three localized changes:
 
-1. **Send-wrapper swap** — replaced the direct
-   `@(m/edit-original-interaction-response! …)` call with
+1. **Send-wrapper swap** (in `query-for-option-or-request`) — replaced
+   the direct `@(m/edit-original-interaction-response! …)` call with
    `(discord/send-request-embed! …)`. The wrapper dispatches to
    discljord's normal edit path or a multipart HTTP PATCH when the
    embed carries a `:cover-attachment` (fork addition — book covers
    may be downloaded as bytes and attached to the Discord message
    when an absolute URL isn't available).
-2. **UUID hand-off into request-embed payload** — passes `(assoc
-   payload :sm-uuid uuid)` to the backend's `request-embed` call so
-   Chaptarr can stash its pre-POST-resolved book id back into the
-   cached payload (where the Request-click handler's `request` will
-   see it via the `:existing-book-id` fast path). Upstream backends
-   ignore the extra key. This enables §3.17's pre-request-embed POST,
-   which is the only way to get working cover images on Plex-auth
-   Chaptarr builds.
-
-No other lines were changed.
+2. **UUID hand-off into request-embed payload** (in
+   `query-for-option-or-request`) — passes `(assoc payload :sm-uuid
+   uuid)` to the backend's `request-embed` call so Chaptarr can
+   stash its pre-POST-resolved book id back into the cached payload
+   (where the Request-click handler's `request` will see it via the
+   `:existing-book-id` fast path). Upstream backends ignore the
+   extra key. This enables §3.17's pre-request-embed POST, which is
+   the only way to get working cover images on Plex-auth Chaptarr
+   builds.
+3. **Progress-message before blocking request take** (in
+   `process-event! "request"`) — a single `msg-resp` call inserted
+   between the letfn definition and the blocking `(a/<!! ...)` edits
+   the ephemeral message to a "Working on your request…" string.
+   Two reasons: (a) `content-response` carries `:components []`, so
+   this edit strips the Request/Cancel buttons and closes the
+   duplicate-click pathway that was producing Discord's generic "This
+   interaction failed" on the Chaptarr placeholder-remediation path
+   (Live Test 17). (b) For book/audiobook requests specifically,
+   the message warns that Chaptarr's metadata-pull can take up to a
+   minute for large author catalogs (Brandon Sanderson: 280 books,
+   2729 editions, RefreshAuthor ≈ 60s). Fast-path backends get a
+   shorter generic message and a brief flash before the final reply
+   lands. §3.21.
 
 ---
 
