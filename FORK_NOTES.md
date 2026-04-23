@@ -317,3 +317,15 @@ Higher-risk scenarios (not seen as of this writing):
   no editions to lose. Implemented in
   `chaptarr.clj/remediate-placeholder-target!` + `impl/refresh-author`.
   §3.20.
+- **Explicit try/catch on `request` for go-block exception routing.**
+  core.async's go macro is supposed to route exceptions to the block's
+  return channel, but Live Test 16 showed exceptions thrown during a
+  continuation on a hato HTTP worker thread (async-io-N) can leak to
+  the thread's default uncaught handler. `a/<!!` in the state machine
+  then hangs until Discord's interaction-ack timeout fires, and the
+  user gets the generic "This interaction failed" banner instead of
+  our 403 body. Wrapping `request`'s body in `try` + `(catch Throwable
+  e ... e)` returns the Throwable as the channel value so the state
+  machine's `else` branch can send the body's message to Discord.
+  Protects both the placeholder-remediation throw (§3.20) and the
+  pre-existing format-mismatch 403 throw. §3.20.

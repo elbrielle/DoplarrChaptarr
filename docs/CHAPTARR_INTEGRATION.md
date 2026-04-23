@@ -747,6 +747,20 @@ refresh is safe there.
   provider recognizes), no refresh will help. The new error
   message tells the operator where to look next.
 
+**Go-block exception routing.** `chaptarr/request` wraps its whole
+body in `try` + `(catch Throwable e ... e)` and returns the caught
+Throwable as the go-block's channel value. core.async's ioc-macro
+is supposed to auto-route exceptions to the block's channel, but
+Live Test 16 showed this is unreliable for exceptions thrown in a
+continuation that runs on a hato HTTP worker thread (async-io-N)
+after an `a/<!` park-resume. The exception leaked to the worker's
+default uncaught handler and `a/<!!` in the interaction state
+machine hung until Discord's own timeout fired, producing the
+generic "This interaction failed" banner instead of the 403 body
+we meant to show. Returning the Throwable explicitly forces it
+onto the channel so the state machine's `else` branch can route
+the body's `message` to Discord as an ephemeral response.
+
 ---
 
 ## 4. Request flow — what actually happens when a user types `/request book`
@@ -852,5 +866,6 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-22    | Lookup and library disagree on provider namespace (gr: vs hc:) | Normalized author-name fallback on single-match (§3.19) |
 | 2026-04-22    | Anthology/combined-title rows out-rank exact-title placeholders | Tier-preferred title matching: exact > substring (§3.19) |
 | 2026-04-22    | Stale monitored placeholder rows yield a misleading `:processing` message | Fire `RefreshAuthor` + poll before short-circuiting, clearer error on timeout (§3.20) |
+| 2026-04-23    | Exceptions thrown mid-go-continuation leak to worker thread, Discord hangs | Wrap `request` body in `try`+`(catch e e)` to force exceptions onto the channel (§3.20) |
 
 Add new rows when you find new surprises.

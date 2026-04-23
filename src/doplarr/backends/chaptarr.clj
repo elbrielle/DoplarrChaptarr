@@ -419,7 +419,26 @@
 
 (defn request [payload media-type]
   (a/go
-    (let [{:keys [author-id target-book]} (a/<! (resolve-target-book! payload media-type))
+    ;; Explicit try/catch around the entire go-block body. Two reasons:
+    ;;
+    ;; 1. core.async's ioc-macro wrapping is supposed to route exceptions
+    ;;    thrown inside a go block onto the block's return channel, but
+    ;;    Live Test 16 showed this isn't reliable for exceptions thrown
+    ;;    mid-continuation (e.g. inside a `let` binding that runs after
+    ;;    an `a/<!` park-resume on a hato HTTP worker thread). Those
+    ;;    exceptions leaked to the worker's default Thread.uncaught
+    ;;    handler, and `a/<!!` in the interaction state machine blocked
+    ;;    forever — the user saw Discord's generic 'This interaction
+    ;;    failed' after its own timeout fired.
+    ;;
+    ;; 2. By catching here and returning the Throwable as a value, we
+    ;;    drop the exception onto the channel explicitly. The state
+    ;;    machine's `log-on-error` + fmnoise `else` already know how to
+    ;;    route Throwables with :status 403 bodies to Discord as
+    ;;    ephemeral messages — we just have to make sure the exception
+    ;;    arrives as a channel value.
+    (try
+      (let [{:keys [author-id target-book]} (a/<! (resolve-target-book! payload media-type))
           requested-title (:raw-title payload)
           ;; If selection landed on a placeholder row, give Chaptarr a
           ;; chance to resolve it via author-level refresh BEFORE we
@@ -517,4 +536,16 @@
                         (str "Chaptarr doesn't have this title available as "
                              (case media-type :audiobook "an audiobook" "an ebook")
                              ". Try the other format, or check Chaptarr's "
-                             "metadata source for edition availability.")}}))))))
+                             "metadata source for edition availability.")}}))))
+      (catch Throwable e
+        ;; Return the exception as the go-block's channel value so the
+        ;; interaction state machine's `else` branch can read it via
+        ;; `a/<!!` and render the 403 body to Discord. Without this,
+        ;; exceptions thrown during an ioc-macro continuation leak to
+        ;; the worker thread's default uncaught handler and Discord
+        ;; hangs until its interaction-ack timeout fires.
+        (warn (str "Chaptarr request: returning Throwable to channel — "
+                   (.getMessage e)
+                   (when-let [d (ex-data e)]
+                     (str " " (pr-str (select-keys d [:status]))))))
+        e))))
