@@ -827,6 +827,18 @@
        ;; a weird title' cases — you can tell at a glance whether the
        ;; ranker was operating in the exact, substring, or no-match
        ;; tier. See §3.22.
+       ;;
+       ;; `winner-any-edition-ok` and `winner-hardcover-book-id` are
+       ;; observability-only — not currently consumed by the ranker.
+       ;; `anyEditionOk` is Chaptarr's own 'this row has usable
+       ;; editions' verdict and the Moonrock probe confirmed it's
+       ;; present (true on resolved rows, false on placeholders);
+       ;; logging it lets us decide whether to promote it to a
+       ;; ranker signal after watching a few live cases. The
+       ;; Hardcover IDs are logged as `nil` on the current Chaptarr
+       ;; build (the field isn't exposed on resolved rows, per
+       ;; probe), so this is future-proof scaffolding for if/when
+       ;; Chaptarr exposes them uniformly.
        (when (and requested-title winner)
          (info (str "Chaptarr preferred-book-for-format: tier=" (name tier)
                     " exact-count=" (count (or exact-matched []))
@@ -836,7 +848,10 @@
                     " winner-title=" (pr-str (:title winner))
                     " winner-length-affinity=" (title-length-affinity
                                                 winner requested-title)
-                    " winner-format-rank=" (format-match-rank winner media-type))))
+                    " winner-format-rank=" (format-match-rank winner media-type)
+                    " winner-any-edition-ok=" (pr-str (:any-edition-ok winner))
+                    " winner-foreign-edition-id=" (pr-str (:foreign-edition-id winner))
+                    " winner-hardcover-book-id=" (pr-str (:hardcover-book-id winner)))))
        winner))))
 
 (defn extract-author-id
