@@ -801,10 +801,13 @@ Request/Cancel buttons from the message. Three effects:
   practice.
 - **Chaptarr-specific wording.** For `media-type` in `#{:book
   :audiobook}` the message explicitly warns the refresh can take up
-  to a minute for large author catalogs. Other backends get a
-  shorter generic "Working on your request…" and a brief flash
+  to a minute for large author catalogs ("Working on your Chaptarr
+  request. This may take up to a minute."). Other backends get a
+  shorter generic "Working on your request." and a brief flash
   before the final reply lands — no observable UX regression on
-  the fast path.
+  the fast path. Live Test 18 feedback called out the earlier draft
+  messages as too verbose for the mobile Discord UI; the current
+  strings are tuned for single-line readability.
 
 **What this does not fix.**
 - **Rapid double-tap race.** If a user double-clicks fast enough
@@ -816,6 +819,79 @@ Request/Cancel buttons from the message. Three effects:
   makes Chaptarr's upstream metadata source respond faster. The
   progress message reframes the wait as "the system is working on
   your request" rather than "the system is broken."
+
+### 3.22 Noisy edition titles in existing-author catalogs
+
+Live Test 18 surfaced a selection bug against Franz Kafka's
+existing-author catalog (2044 book rows indexed). The user
+requested "The Trial"; selection landed on row 858 with title:
+
+> *The Trial by Franz Kafka: A Masterpiece of Modern Literature
+> Exploring Power, Bureaucracy, and Existential Struggle (Grapevine
+> Edition)*
+
+Under the pre-fix ranker, row 858 won tier 2 (substring-matched)
+because:
+- format-match-rank tied among all resolved tier-2 rows
+- ratings.popularity favored the Grapevine edition (many reviews
+  of this specific commercial edition)
+
+Chaptarr then fed that 113-character title verbatim to the release
+indexer, which returned zero matches. The request technically
+succeeded in Doplarr and Chaptarr, but nothing was grabbed.
+
+**The fix.** `preferred-book-for-format` now adds a
+`title-length-affinity` ranker between `format-match-rank` and
+`ratings.popularity` in the sort-by vector. The ranker returns a
+non-positive integer: negative of the absolute difference between
+the row's normalized title length and the requested title's
+normalized title length. Higher (closer to zero) is better. For
+the Kafka case:
+- "The Trial (Penguin Classics)" → length diff 19 → affinity -19
+- "The Trial by Franz Kafka: A Masterpiece..." → length diff ~104
+  → affinity -104
+
+Penguin Classics wins, Chaptarr searches the indexer with a
+tighter string, and the odds of a match go up.
+
+**Why length, not a noise-phrase list.** Explicit phrase filtering
+(" by <author>", "A Masterpiece of...", "Deluxe Edition", etc.)
+would be more targeted but needs a maintained list that drifts
+with metadata-source changes. Length is a mechanical proxy — noisy
+titles are longer than clean ones, and Chaptarr consumes the raw
+title, so length is exactly what matters downstream. If live tests
+surface cases length-alone misses (e.g. a short but semantically
+wrong row), a phrase-stripping layer can go on top.
+
+**Why this ranker, not a filter.** Length affinity is a
+tie-breaker, not a gate. If the only tier-2 row available has a
+noisy title, it's still a legitimate candidate — selection picks
+it and the indexer does its best. Length only moves the decision
+when two otherwise-equivalent rows compete.
+
+**Inside the exact tier this is a no-op.** All tier-1 rows have
+identical normalized titles (that's what "exact" means), so length
+affinity collapses to zero across the tier. It only differentiates
+within tier 2 (substring) and tier 3 (format-only fallback).
+
+**Diagnostic logging.** `preferred-book-for-format` now emits an
+info line per selection: tier, candidate counts per tier, winner
+id, winner title, winner length-affinity, winner format-rank.
+Makes future weird picks diagnosable without guessing which tier
+ran. Live Test 18 observation that "selected row 858 via
+title-tier=substring" would be immediately visible at this level.
+
+**What this does not fix.**
+- **Catalogs where no row has a clean title.** If every tier-2
+  candidate for "The Trial" in Kafka's catalog is marketing fluff
+  at roughly equal length, length affinity can't pick a winner —
+  falls through to popularity. The operator's remedy is the same
+  as for placeholder-unresolved (§3.20): check whether Chaptarr's
+  metadata source has cleaner edition data upstream.
+- **Chaptarr-side search matching quirks.** If Chaptarr's
+  indexer-matching logic is fragile to even short edition
+  annotations like "(Penguin Classics)", length affinity doesn't
+  help — the fix there is upstream of this fork.
 
 ---
 
@@ -924,5 +1000,7 @@ Plex-auth Chaptarr builds. See §3.17.
 | 2026-04-22    | Stale monitored placeholder rows yield a misleading `:processing` message | Fire `RefreshAuthor` + poll before short-circuiting, clearer error on timeout (§3.20) |
 | 2026-04-23    | Exceptions thrown mid-go-continuation leak to worker thread, Discord hangs | Wrap `request` body in `try`+`(catch e e)` to force exceptions onto the channel (§3.20) |
 | 2026-04-23    | Long `RefreshAuthor` makes Request clicks look broken, users re-click | Progress-message edit before blocking request take strips the button + narrates the wait (§3.21) |
+| 2026-04-23    | Marketing-heavy edition titles win selection, indexer search fails | Title-length-affinity ranker between format-match-rank and popularity (§3.22) |
+| 2026-04-23    | Progress/error copy too verbose for mobile Discord UI | Trimmed progress + placeholder-unresolved + format-mismatch strings (§3.21, §3.22) |
 
 Add new rows when you find new surprises.

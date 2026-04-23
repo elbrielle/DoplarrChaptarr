@@ -409,13 +409,11 @@
    "Chaptarr has only a placeholder row for this book and couldn't resolve it"
    {:status 403
     :body {"message"
-           (str "Chaptarr has a placeholder for this "
+           (str "Chaptarr couldn't resolve this "
                 (case media-type :audiobook "audiobook" "ebook")
-                " but the metadata source hasn't supplied a real edition "
-                "for it. Open the author's page in Chaptarr and trigger a "
-                "manual Refresh — if it still won't resolve, the upstream "
-                "source (Hardcover / Goodreads / AudiMeta) may be rate-"
-                "limited or not carrying this edition.")}}))
+                "'s metadata. Try refreshing the author in Chaptarr — "
+                "if that doesn't help, the upstream source may not carry "
+                "this edition.")}}))
 
 (defn request [payload media-type]
   (a/go
@@ -533,10 +531,9 @@
                 "Chaptarr has no matching format for this title"
                 {:status 403
                  :body {"message"
-                        (str "Chaptarr doesn't have this title available as "
+                        (str "Chaptarr doesn't have this title as "
                              (case media-type :audiobook "an audiobook" "an ebook")
-                             ". Try the other format, or check Chaptarr's "
-                             "metadata source for edition availability.")}}))))
+                             ". Try the other format.")}}))))
       (catch Throwable e
         ;; Return the exception as the go-block's channel value so the
         ;; interaction state machine's `else` branch can read it via

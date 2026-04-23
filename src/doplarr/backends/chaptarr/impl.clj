@@ -704,6 +704,45 @@
                     :else 0)]
     (+ base-rank (if (book-row-complete? book) 10 0))))
 
+(defn- title-length-affinity
+  "Return a non-positive integer: negative of the absolute distance
+  between the row's normalized title length and the requested
+  title's normalized title length. Higher (closer to zero) is a
+  better match.
+
+  Used as a tie-breaker within the substring-match tier of
+  `preferred-book-for-format`. Rows with marketing-heavy edition
+  titles (e.g. 'The Trial by Franz Kafka: A Masterpiece of Modern
+  Literature Exploring Power, Bureaucracy, and Existential Struggle
+  (Grapevine Edition)') have titles that substring-match the
+  requested 'The Trial' but are ~100 characters longer than a
+  cleaner edition like 'The Trial (Penguin Classics)'. Length
+  affinity penalizes the bloated row so selection lands on a
+  tighter-titled edition. Matters because Chaptarr feeds the
+  selected row's raw title verbatim to the release indexer — the
+  shorter the row title, the better the indexer match. Live Test
+  18 surfaced the Kafka case.
+
+  Intentionally NOT a filter — a noisy-title row is still a
+  legitimate candidate if nothing better is available. Length
+  affinity only moves the decision when two format-matched,
+  completeness-equal rows are competing; in single-candidate
+  tiers it's a no-op.
+
+  Within the exact-title tier, all rows have identical normalized
+  titles by construction, so length affinity collapses to zero
+  everywhere — no effect.
+
+  Nil or empty titles/requests collapse to zero (no preference
+  expressed), keeping the ranker monotonic in edge cases where
+  either side lacks a comparable string."
+  [row requested-title]
+  (let [row-len (count (or (normalize-title (:title row)) ""))
+        req-len (count (or (normalize-title requested-title) ""))]
+    (if (and (pos? row-len) (pos? req-len))
+      (- (Math/abs (- row-len req-len)))
+      0)))
+
 (defn preferred-book-for-format
   "Choose the best Chaptarr book row for a requested format when an author
   has multiple matching editions. Preference order:
@@ -715,9 +754,12 @@
      'The Nightingale' selected by popularity).
   2. Resolved edition (has releaseDate + images) over placeholder row
   3. Explicit mediaType format match over edition.isEbook fallback
-  4. Higher ratings.popularity
-  5. Higher ratings.votes (more established edition)
-  6. Newer releaseDate
+  4. Row title length is close to the requested title's length (beats
+     marketing-heavy edition titles — see `title-length-affinity` and
+     Live Test 18 Kafka case)
+  5. Higher ratings.popularity
+  6. Higher ratings.votes (more established edition)
+  7. Newer releaseDate
 
   When `requested-title` is nil or no row matches it (e.g. Chaptarr's
   lookup translated a series query to a specific title not present in the
@@ -749,7 +791,11 @@
          title-matched (when (and requested-title (nil? exact-matched))
                          (seq (filter #(title-matches? % requested-title)
                                       format-filtered)))
-         candidates (or exact-matched title-matched format-filtered)]
+         candidates (or exact-matched title-matched format-filtered)
+         tier (cond
+                exact-matched  :exact
+                title-matched  :substring
+                :else          :format-only)]
      (when (and requested-title (nil? exact-matched) (nil? title-matched)
                 (seq format-filtered))
        (warn (str "preferred-book-for-format: no " (name media-type)
@@ -759,13 +805,39 @@
                   " format-matching candidates. Chaptarr may have "
                   "resolved a different canonical title for this request "
                   "(e.g. series name → first book).")))
-     (->> candidates
-          (sort-by (fn [book]
-                     [(format-match-rank book media-type)
-                      (or (get-in book [:ratings :popularity]) 0)
-                      (or (get-in book [:ratings :votes]) 0)
-                      (or (:release-date book) "")]))
-          last))))
+     (let [winner (->> candidates
+                       (sort-by (fn [book]
+                                  [(format-match-rank book media-type)
+                                   ;; Length-affinity is the second
+                                   ;; ranker so noisy edition titles lose
+                                   ;; to cleaner ones BEFORE popularity
+                                   ;; kicks in. Inside the exact tier
+                                   ;; this is a no-op (all titles
+                                   ;; normalize to the same length), so
+                                   ;; it only differentiates within
+                                   ;; substring and format-only tiers.
+                                   (title-length-affinity book requested-title)
+                                   (or (get-in book [:ratings :popularity]) 0)
+                                   (or (get-in book [:ratings :votes]) 0)
+                                   (or (:release-date book) "")]))
+                       last)]
+       ;; One info line per selection so operators can see which tier
+       ;; won and how close the winning title's length was to the
+       ;; request. Matters for diagnosing 'Chaptarr searched MaM with
+       ;; a weird title' cases — you can tell at a glance whether the
+       ;; ranker was operating in the exact, substring, or no-match
+       ;; tier. See §3.22.
+       (when (and requested-title winner)
+         (info (str "Chaptarr preferred-book-for-format: tier=" (name tier)
+                    " exact-count=" (count (or exact-matched []))
+                    " substring-count=" (count (or title-matched []))
+                    " format-count=" (count format-filtered)
+                    " winner-id=" (:id winner)
+                    " winner-title=" (pr-str (:title winner))
+                    " winner-length-affinity=" (title-length-affinity
+                                                winner requested-title)
+                    " winner-format-rank=" (format-match-rank winner media-type))))
+       winner))))
 
 (defn extract-author-id
   "Pull the newly-created author's id out of the POST /book response body.

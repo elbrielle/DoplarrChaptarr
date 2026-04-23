@@ -127,11 +127,8 @@
       ;;    like a bug. Other backends (Sonarr/Radarr/Overseerr) are
       ;;    fast enough that the generic message is fine.
       (msg-resp (if (contains? #{:book :audiobook} media-type)
-                  (str "Working on your Chaptarr request… Chaptarr may be "
-                       "pulling metadata for this author from its upstream "
-                       "source, which can take up to a minute for large "
-                       "catalogs. This message will update when it's done.")
-                  "Working on your request…"))
+                  "Working on your Chaptarr request. This may take up to a minute."
+                  "Working on your request."))
       (->>  (log-on-error
              (a/<!! ((utils/media-fn media-type "request")
                      (assoc payload :format (keyword format) :discord-id user-id)

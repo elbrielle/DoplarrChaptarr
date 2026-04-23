@@ -342,3 +342,19 @@ Higher-risk scenarios (not seen as of this writing):
   machine's `else` branch can send the body's message to Discord.
   Protects both the placeholder-remediation throw (§3.20) and the
   pre-existing format-mismatch 403 throw. §3.20.
+- **Title-length-affinity ranker in `preferred-book-for-format`.**
+  Existing-author catalogs (Franz Kafka, 2044 books) can carry
+  resolved but marketing-heavy edition titles like "The Trial by
+  Franz Kafka: A Masterpiece of Modern Literature Exploring Power,
+  Bureaucracy, and Existential Struggle (Grapevine Edition)". Tier
+  2 (substring-match) selection used to pick these because
+  completeness + ratings.popularity favored them. Chaptarr then fed
+  the 113-char title verbatim to the release indexer, which
+  returned zero matches. The new `title-length-affinity` helper
+  scores rows by negative absolute length difference from the
+  requested title and slots into the `sort-by` vector *between*
+  `format-match-rank` and `ratings.popularity` — so cleaner-titled
+  rows ("The Trial (Penguin Classics)") win over bloated siblings
+  before popularity kicks in. No-op within the exact-match tier
+  (identical normalized titles → identical lengths). Live Test 18
+  observation. §3.22.
