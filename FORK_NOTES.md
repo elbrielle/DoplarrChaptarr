@@ -47,14 +47,13 @@ resolve by keeping both blocks.
   field in `request-embed`; and a `cond->` wrap so `:image` is only
   assoc'd when `poster` is non-nil (Discord rejects null image
   URLs).
-- `src/doplarr/interaction_state_machine.clj` — three insertions:
-  `(discord/send-request-embed! ...)` wrapper in
-  `query-for-option-or-request` (for multipart cover attachment);
-  `(assoc payload :sm-uuid uuid)` in the same place (lets backends
-  stash state back into the cache); a progress-message edit in
-  `process-event! "request"` before the blocking take (makes long
-  Chaptarr requests feel responsive + strips duplicate-click
-  surface).
+- `src/doplarr/interaction_state_machine.clj` — two insertions:
+  `(assoc payload :sm-uuid uuid)` in `query-for-option-or-request`
+  (lets backends stash state back into the cache — Chaptarr uses
+  this to cache the resolved book id after its pre-request POST);
+  and a progress-message edit in `process-event! "request"` before
+  the blocking take (makes long Chaptarr requests feel responsive +
+  strips duplicate-click surface).
 - `docs/configuration.md` — a Chaptarr section and five rows in the
   Optional Settings table.
 
@@ -114,10 +113,11 @@ refactor, read the integration doc first.
   handles this. Without the gate, Chaptarr silently drops the
   per-book monitor PUT.
 - **POST runs at `request-embed` render, not at Request-click.**
-  Only post-add resolved rows carry absolute cover URLs that
-  Discord will render on Plex-auth Chaptarr builds. A refactor
-  back to confirm-before-commit must provide a new path to
-  absolute covers or accept broken embeds for Plex-auth users.
+  Lookup results don't carry the edition-level identifiers
+  (`isbn13`, `asin`) that the public-CDN cover fallback needs.
+  Post-POST resolved rows do. A refactor back to
+  confirm-before-commit loses both the primary absolute CDN URL
+  and the fallback identifiers — the embed renders coverless.
 - **Selection tiers: exact-title beats substring beats
   no-match.** Inside a tier, resolved rows beat placeholders and
   cleaner titles beat marketing-heavy ones (via
@@ -138,3 +138,12 @@ refactor, read the integration doc first.
   a single-match.** Multi-match names (two indexed "John
   Smith"s) return nil rather than risk resolving to the wrong
   author. The caller POSTs in that case, which is safe but slow.
+- **Cover images do not go through Chaptarr.** The fork prefers
+  the resolved row's absolute CDN URL and falls back to OpenLibrary
+  (by ISBN) or Amazon (by ASIN). Deliberately avoids any design
+  that would require exposing Chaptarr publicly — a previous
+  iteration required a `CHAPTARR__PUBLIC_URL`, which was correctly
+  identified as an unreasonable ask of operators whose Chaptarr
+  lives on an internal network. If a refactor reintroduces a
+  Chaptarr-hosted cover path, the public-URL requirement comes
+  back with it.

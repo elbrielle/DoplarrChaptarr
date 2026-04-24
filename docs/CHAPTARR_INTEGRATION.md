@@ -38,6 +38,11 @@ CHAPTARR__URL=http://chaptarr:8789
 CHAPTARR__API=<api key>
 ```
 
+`CHAPTARR__URL` only needs to be reachable from the Doplarr
+container. No publicly-exposed hostname is required — covers on
+Discord embeds come from public CDNs (see "Cover URLs" below), so
+Chaptarr can stay entirely on your internal network.
+
 Recommended, so requests skip the root-folder and
 quality-profile dropdowns:
 
@@ -50,18 +55,6 @@ CHAPTARR__EBOOK_METADATA_PROFILE=Ebook Default
 CHAPTARR__AUDIOBOOK_METADATA_PROFILE=Audiobook Default
 ```
 
-Optional — only if you want the bot to rewrite relative Chaptarr
-cover paths into absolute public URLs instead of attaching the
-image bytes directly to the Discord embed:
-
-```
-CHAPTARR__PUBLIC_URL=https://chaptarr.example.com
-```
-
-This URL must be publicly reachable from Discord's servers. Leave
-it unset on deployments where Chaptarr is only reachable inside
-the Docker network — the fork will fall back to downloading the
-cover over `CHAPTARR__URL` and attaching the bytes to the embed.
 
 ## Mental model
 
@@ -154,21 +147,37 @@ query that matches no actual release. This is why the ranker
 prefers shorter titles within tier — the fork can't reshape the
 search, but it can pick a row that searches better.
 
-### Cover URLs depend on row lifecycle
+### Cover URLs come from public CDNs, not Chaptarr
 
-- Lookup results carry relative `/MediaCoverProxy/...` paths.
-  Chaptarr builds with Plex auth 401 those paths to anyone without
-  a Plex cookie.
-- Post-POST resolved rows can carry absolute upstream URLs
-  (Amazon, Hardcover CDN). Not universal — some resolved rows
-  still carry only the proxy path.
+Chaptarr's lookup endpoint returns relative `/MediaCoverProxy/...`
+paths that are only reachable inside whatever network Chaptarr
+is on — often with Plex auth in front of them. Rather than ask
+operators to expose their Chaptarr publicly so Discord can fetch
+covers, the fork sources covers from public book-metadata CDNs:
 
-The fork runs POST at confirmation-embed render (not at
-Request-click) so the embed gets the resolved row's cover URL
-when available. If it's still a relative path, `CHAPTARR__PUBLIC_URL`
-rewrites it to a public absolute; without that env var the fork
-downloads the cover inside the container and attaches the bytes
-to the Discord embed as a multipart upload.
+1. **Resolved-row absolute URL.** Post-POST rows on Hardcover /
+   Amazon / Goodreads usually carry a fully-qualified CDN URL in
+   `:images` or `:remote-cover`. When present, this is used as-is.
+2. **OpenLibrary by ISBN-13.** When the resolved row only has a
+   proxy path, `extract-isbn` walks the row's editions for a
+   well-formed `isbn13` and builds
+   `https://covers.openlibrary.org/b/isbn/<isbn>-L.jpg?default=false`.
+   The `default=false` parameter makes OpenLibrary 404 on unknown
+   ISBNs so Discord just omits the image.
+3. **Amazon by ASIN.** When no ISBN is available (common for
+   audiobooks via AudiMeta), `extract-asin` pulls ASIN from either
+   an edition's `:asin` field or the `az:<ASIN>` prefix on
+   `:foreign-edition-id` and builds
+   `https://images-na.ssl-images-amazon.com/images/P/<asin>.jpg`.
+
+If none of the three yield a URL the confirmation embed renders
+without an image. The request flow itself is never affected — the
+monitor PUT and indexer search happen against Chaptarr regardless
+of whether a cover came through.
+
+POST still runs at embed-render time (not at Request-click) so
+`(1)` has the best chance of firing — the resolved row is the one
+that carries those absolute CDN URLs.
 
 ## Ranker design
 

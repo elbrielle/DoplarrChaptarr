@@ -57,10 +57,7 @@
                             media-type))
                      "Exception from request-embed")]
           (swap! state/cache assoc-in [uuid :embed] embed)
-          ;; send-request-embed! dispatches to discljord's normal edit path or
-          ;; a multipart HTTP PATCH when the embed carries a :cover-attachment
-          ;; (fork addition — needed for Chaptarr cover images).
-          (->> (discord/send-request-embed! messaging bot-id token embed uuid)
+          (->> @(m/edit-original-interaction-response! messaging bot-id token (discord/request embed uuid))
                (else #(fatal % "Error in sending request embed"))))
         (let [[op options] (first pending-opts)]
           (->> @(m/edit-original-interaction-response! messaging bot-id token (discord/option-dropdown op options uuid 0))

@@ -48,11 +48,16 @@ Chaptarr is a Readarr fork that manages both ebooks and audiobooks. When
 slash subcommands: `/request book` (ebook) and `/request audiobook`. The
 API key is under `Settings → General` in Chaptarr.
 
-Set `CHAPTARR__URL` and `CHAPTARR__API` in the same form as the other backends
-(the URL must include the protocol, e.g. `http://localhost:8789`). Requests
-submitted through this bot monitor only the specific book requested — the
-author is added with `monitorNewItems: "none"` so Chaptarr does not flood the
-library with the entire back catalog.
+Set `CHAPTARR__URL` and `CHAPTARR__API` in the same form as the other
+backends (the URL must include the protocol, e.g. `http://localhost:8789`).
+`CHAPTARR__URL` only needs to be reachable from Doplarr's container —
+confirmation-embed cover images are sourced from public CDNs (OpenLibrary
+and Amazon, keyed off the book's ISBN / ASIN), so Chaptarr does not need
+to be exposed to the public internet.
+
+Requests submitted through this bot monitor only the specific book
+requested — the author is added with `monitorNewItems: "none"` so Chaptarr
+does not flood the library with the entire back catalog.
 
 Because ebooks and audiobooks typically live under separate root folders and
 often use different quality profiles, the per-format defaults below are
@@ -72,7 +77,6 @@ Doplarr will prompt the user with a dropdown at request time.
 | `SONARR__SEASON_FOLDERS`       | `:sonarr/season-folders`       | Boolean | `false`       | Sets whether you're using season folders in Sonarr                                                                                          |
 | `SONARR__LANGUAGE_PROFILE`     | `:sonarr/language-profile`     | String  | N/A           | The name of the language profile to use by default for Sonarr                                                                               |
 | `OVERSEERR__DEFAULT_ID`        | `:overseerr/default-id`        | Integer | N/A           | The Overseerr user id to use by default if there is no associated discord account for the requester                                         |
-| `CHAPTARR__PUBLIC_URL`               | `:chaptarr/public-url`               | String  | N/A | Publicly-reachable Chaptarr base URL (e.g. `https://chaptarr.example.com`). Used only to rewrite relative book cover image paths so Discord can fetch them. Optional — if unset, book confirmation embeds render without a cover image. |
 | `CHAPTARR__EBOOK_ROOTFOLDER`         | `:chaptarr/ebook-rootfolder`         | String  | N/A | The Chaptarr root folder path to use by default for `/request book`. Example: `/cw-book-ingest`                                           |
 | `CHAPTARR__AUDIOBOOK_ROOTFOLDER`     | `:chaptarr/audiobook-rootfolder`     | String  | N/A | The Chaptarr root folder path to use by default for `/request audiobook`. Example: `/audiobooks/audiobooks`                              |
 | `CHAPTARR__EBOOK_QUALITY_PROFILE`    | `:chaptarr/ebook-quality-profile`    | String  | N/A | The Chaptarr quality profile name to use by default for ebook requests                                                                    |

@@ -36,7 +36,6 @@
 (spec/def :overseerr/default-id pos-int?)
 
 ; Chaptarr optionals (fork addition)
-(spec/def :chaptarr/public-url string?)
 (spec/def :chaptarr/ebook-rootfolder string?)
 (spec/def :chaptarr/audiobook-rootfolder string?)
 (spec/def :chaptarr/ebook-quality-profile string?)
@@ -72,7 +71,6 @@ If you have configured one, make sure to check spelling. A valid configuration c
                                      :overseerr/default-id
                                      :sonarr/rootfolder
                                      :radarr/rootfolder
-                                     :chaptarr/public-url
                                      :chaptarr/ebook-rootfolder
                                      :chaptarr/audiobook-rootfolder
                                      :chaptarr/ebook-quality-profile

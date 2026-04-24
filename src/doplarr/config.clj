@@ -27,7 +27,6 @@
     ; Chaptarr (fork addition)
     :chaptarr/url
     :chaptarr/api
-    :chaptarr/public-url
     :chaptarr/ebook-rootfolder
     :chaptarr/audiobook-rootfolder
     :chaptarr/ebook-quality-profile

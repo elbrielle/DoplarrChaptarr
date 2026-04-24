@@ -132,48 +132,6 @@
            (= 1 (count rootfolders)) (:id (first rootfolders))
            :else                     rootfolders)}))))
 
-(defn- cover-bytes-or-nil
-  "Attempt to download cover bytes from Chaptarr so they can be attached to
-  the Discord embed as a file. Returns nil when the download fails — the
-  embed renders without a cover in that case, which is strictly better UX
-  than failing the whole request."
-  [cover-path]
-  (a/go
-    (let [result (a/<! (impl/download-cover cover-path))]
-      (when (and result (not (instance? Throwable result)))
-        result))))
-
-(defn- cover-poster-and-attachment
-  "Decide how to present the book cover in the Discord embed based on what
-  URL shape Chaptarr returned and what config is available:
-
-  - absolute http(s) URL → hand it to Discord's :image.url directly; no
-    attachment needed
-  - relative path + CHAPTARR__PUBLIC_URL set → rewrite to absolute and use
-    :image.url (same as above)
-  - relative path + no public URL → download the bytes inside Doplarr's
-    container (where Chaptarr is reachable) and attach them to the
-    interaction response; embed :image.url becomes attachment://cover.jpeg
-
-  If every path fails, the confirmation embed just omits the cover."
-  [remote-cover]
-  (a/go
-    (let [absolute (impl/absolutify-cover-url remote-cover)]
-      (cond
-        absolute
-        {:poster absolute}
-
-        (and remote-cover (.startsWith ^String remote-cover "/"))
-        (if-let [bytes (a/<! (cover-bytes-or-nil remote-cover))]
-          {:poster "attachment://cover.jpeg"
-           :cover-attachment {:bytes bytes
-                              :filename "cover.jpeg"
-                              :content-type "image/jpeg"}}
-          {:poster nil})
-
-        :else
-        {:poster nil}))))
-
 (defn- resolve-format-rootfolder-paths
   "Always send both ebook and audiobook root folder paths on the author so the
   requested format lands in its configured folder and the other format has a
@@ -276,22 +234,30 @@
           audiobook? (= media-type :audiobook)
           shown-q-id (if audiobook? audiobook-quality-profile-id ebook-quality-profile-id)
           shown-m-id (if audiobook? audiobook-metadata-profile-id ebook-metadata-profile-id)
-          ;; Run POST + pick now so the embed uses absolute cover URLs
-          ;; from the resolved row rather than the lookup's relative
-          ;; /MediaCoverProxy/... paths. Plex-auth Chaptarr builds 401
-          ;; the proxy path, so the post-add URL is the only one that
-          ;; renders reliably in Discord. Fall back to lookup cover on
-          ;; failure — the request handler will surface any real error.
+          ;; Run POST + pick now so we have a resolved row with edition
+          ;; identifiers (isbn13, asin) by embed-render time. Lookup
+          ;; results don't carry these fields, so deferring the POST
+          ;; would strip the public-CDN cover fallback of its inputs.
           pre-request (try
                         (a/<! (resolve-target-book! payload media-type))
                         (catch Throwable e
                           (warn (str "request-embed: pre-request POST failed, "
-                                     "falling back to lookup cover URL — "
+                                     "continuing without a resolved row — "
                                      (.getMessage e)))
                           nil))
           target-book (:target-book pre-request)
-          effective-cover (or (impl/cover-url target-book) remote-cover)
-          cover (a/<! (cover-poster-and-attachment effective-cover))]
+          ;; Prefer an absolute URL from the resolved row (Hardcover /
+          ;; Amazon / Goodreads CDN). If Chaptarr only has the relative
+          ;; /MediaCoverProxy/... proxy path, fall back to a public CDN
+          ;; keyed off the edition's ISBN or ASIN. Lookup's remote-cover
+          ;; is the last resort — it's usually the same proxy path so
+          ;; only useful when target-book failed to resolve at all.
+          resolved-cover (impl/cover-url target-book)
+          poster (cond
+                   (impl/absolute-cover-url? resolved-cover) resolved-cover
+                   target-book (impl/public-cover-url target-book)
+                   (impl/absolute-cover-url? remote-cover) remote-cover
+                   :else nil)]
       ;; Stash the resolved book id so the Request-click handler takes
       ;; the :existing-book-id fast path (skips POST + polling). When
       ;; target-book didn't resolve but author did, fall back to any
@@ -305,17 +271,16 @@
               stash-id (or target-id fallback-id)]
           (when stash-id
             (swap! state/cache assoc-in [sm-uuid :payload :existing-book-id] stash-id))))
-      (cond-> {:title (if (and author-name (not (.contains (or title "") author-name)))
-                        (str title " — " author-name)
-                        title)
-               :overview overview
-               :poster (:poster cover)
-               :media-type media-type
-               :request-formats [""]
-               :quality-profile (utils/name-from-id quality-profiles shown-q-id)
-               :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
-               :rootfolder (utils/name-from-id rootfolders rootfolder-id)}
-        (:cover-attachment cover) (assoc :cover-attachment (:cover-attachment cover))))))
+      {:title (if (and author-name (not (.contains (or title "") author-name)))
+                (str title " — " author-name)
+                title)
+       :overview overview
+       :poster poster
+       :media-type media-type
+       :request-formats [""]
+       :quality-profile (utils/name-from-id quality-profiles shown-q-id)
+       :metadata-profile (utils/name-from-id metadata-profiles shown-m-id)
+       :rootfolder (utils/name-from-id rootfolders rootfolder-id)})))
 
 (defn- remediate-placeholder-target!
   "Fire a `RefreshAuthor` command and poll for the requested title to

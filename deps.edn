@@ -9,7 +9,6 @@
                                :git/sha "b66cdbed645ff052dd5f18361a0a7722a4860304"}
         expound/expound {:mvn/version "0.9.0"}
         org.clojure/core.async {:mvn/version "1.8.741"}
-        cheshire/cheshire {:mvn/version "6.1.0"}
         fmnoise/flow {:mvn/version "4.3.0"}
         hato/hato {:mvn/version "1.0.0"}
         com.taoensso/timbre {:mvn/version "6.8.0"}

@@ -5,7 +5,6 @@
    [doplarr.state :as state]
    [doplarr.utils :as utils]
    [fmnoise.flow :refer [then]]
-   [hato.client :as hc]
    [taoensso.timbre :refer [info warn]]))
 
 (def base-url (delay (str (:chaptarr/url @state/config) "/api/v1")))
@@ -73,18 +72,64 @@
            first :url)
       (:remote-cover kebab)))
 
-(defn absolutify-cover-url
-  "Discord rejects relative image URLs with a 50035. Returns the URL
-  unchanged if already absolute, prepends CHAPTARR__PUBLIC_URL if
-  configured, or nil if neither applies (caller should omit :image)."
+(defn absolute-cover-url?
+  "True when `url` is a fully-qualified http(s) URL that Discord can
+  fetch directly. Chaptarr's lookup endpoint returns relative
+  `/MediaCoverProxy/...` paths — those need the public-CDN fallback
+  below; resolved post-POST rows usually carry absolute Hardcover /
+  Amazon / Goodreads URLs which Discord renders as-is."
   [url]
-  (when (string? url)
-    (cond
-      (re-find #"^https?://" url) url
-      (str/starts-with? url "/")
-      (when-let [public-url (:chaptarr/public-url @state/config)]
-        (str (str/replace public-url #"/$" "") url))
-      :else nil)))
+  (boolean (and (string? url) (re-find #"^https?://" url))))
+
+(defn- extract-isbn
+  "Pull the first non-blank ISBN-13 off a book row's editions, strip
+  any formatting dashes, and return it only if it's the 13-digit
+  shape OpenLibrary expects. Anything malformed collapses to nil so
+  callers fall through to the next cover source."
+  [book]
+  (some (fn [edition]
+          (when-let [raw (:isbn13 edition)]
+            (let [cleaned (str/replace (str raw) #"[^0-9Xx]" "")]
+              (when (re-matches #"^\d{13}$" cleaned) cleaned))))
+        (:editions book)))
+
+(defn- extract-asin
+  "Pull an ASIN off a book row. Tries each edition's `:asin` first,
+  then parses the `az:<ASIN>` prefix off `:foreign-edition-id` as a
+  secondary source (Audible / Amazon editions carry ASIN-shaped ids
+  there). Returns the first alphanumeric 10-char hit."
+  [book]
+  (let [asin-re #"^[A-Z0-9]{10}$"
+        from-edition (some (fn [edition]
+                             (when-let [raw (:asin edition)]
+                               (let [up (str/upper-case (str raw))]
+                                 (when (re-matches asin-re up) up))))
+                           (:editions book))]
+    (or from-edition
+        (let [edition-id (str (:foreign-edition-id book))]
+          (when (str/starts-with? edition-id "az:")
+            (let [candidate (str/upper-case (subs edition-id 3))]
+              (when (re-matches asin-re candidate) candidate)))))))
+
+(defn public-cover-url
+  "Best-effort fallback when Chaptarr's resolved row has no absolute
+  cover URL. Hits public CDNs keyed off the book's editions:
+
+    - OpenLibrary by ISBN-13: `/b/isbn/<isbn>-L.jpg?default=false`.
+      `default=false` makes OpenLibrary 404 on unknown ISBNs so
+      Discord renders the embed coverless rather than showing a
+      1×1 placeholder.
+    - Amazon by ASIN: `/images/P/<asin>.jpg`. Stable public endpoint;
+      audiobooks (AudiMeta) almost always carry an ASIN.
+
+  Returns nil when neither identifier is available. No HEAD check —
+  a 404 from either CDN just means Discord skips `:image`, which is
+  exactly the same UX as returning nil here."
+  [book]
+  (or (when-let [isbn (extract-isbn book)]
+        (str "https://covers.openlibrary.org/b/isbn/" isbn "-L.jpg?default=false"))
+      (when-let [asin (extract-asin book)]
+        (str "https://images-na.ssl-images-amazon.com/images/P/" asin ".jpg"))))
 
 (defn- trim-or-nil [s]
   (when (string? s)
@@ -682,31 +727,3 @@
         kebab (utils/from-camel body)]
     (or (:author-id kebab)
         (get-in kebab [:author :id]))))
-
-(defn download-cover
-  "Fetch cover-image bytes from Chaptarr's MediaCoverProxy endpoint.
-  Used when CHAPTARR__PUBLIC_URL isn't configured: the bytes are
-  attached directly to the Discord embed rather than asking Discord
-  to fetch them over the public internet. Returns a channel yielding
-  the byte array or an exception; failures should never block the
-  request — the embed just renders coverless."
-  [cover-path]
-  (let [chan (a/promise-chan)]
-    (hc/request
-     {:method :get
-      :url (str (:chaptarr/url @state/config) cover-path)
-      :as :byte-array
-      :async? true
-      :version :http-1.1
-      :throw-exceptions? true
-      :headers {"X-API-Key" @api-key}
-      :timeout 10000}
-     (fn [resp]
-       (if (and (bytes? (:body resp)) (pos? (alength (:body resp))))
-         (a/put! chan (:body resp))
-         (do (warn "Chaptarr returned empty cover bytes for" cover-path)
-             (a/put! chan (ex-info "empty cover body" {:cover-path cover-path})))))
-     (fn [exc]
-       (warn "Cover download failed for" cover-path (.getMessage exc))
-       (a/put! chan exc)))
-    chan))
