@@ -9,22 +9,34 @@ Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / 
 
 ## What this fork adds
 
-- Chaptarr backend wired to Chaptarr's Readarr-v1-compatible API
-- Per-format config keys for root folders and quality profiles, so ebook and audiobook requests land in the right location without prompting the user at request time
-- Cross-format handling: requesting an audiobook for a book you already have as an ebook (or vice versa) flips the relevant `monitored` flag via `PUT /book/{id}` and triggers `BookSearch`, instead of 409-ing on a duplicate `foreignBookId`
-- Author adds use `monitorNewItems: "none"` + `addOptions.monitor: "specificBook"` so only the requested book is monitored — Chaptarr does not pull in the author's entire back catalog
-- Both ebook and audiobook root folder paths are always set on the author record to avoid Chaptarr's "switched save locations" bug
+- Chaptarr backend on the Readarr-v1-compatible API.
+- Per-format config keys for root folders, quality profiles, and
+  metadata profiles, so requests usually skip the dropdowns.
+- Cross-format requests (asking for an audiobook when you already
+  have the ebook, or vice versa) flip the correct monitor flag and
+  fire a fresh indexer search rather than 409-ing on duplicate IDs.
+- Author adds only monitor the specific requested book — Chaptarr
+  doesn't pull in the author's whole back catalogue.
+- Cover images render reliably on Plex-auth Chaptarr builds, with
+  or without a publicly-reachable `CHAPTARR__PUBLIC_URL`.
 
-See [FORK_NOTES.md](FORK_NOTES.md) for the exact list of additive new files vs. localized modifications — designed so future upstream Doplarr releases can be merged with minimal friction. If you're deploying this image, also read [docs/CHAPTARR_INTEGRATION.md](docs/CHAPTARR_INTEGRATION.md) — field-verified operator notes on Chaptarr's data-model quirks, env setup, and troubleshooting.
+If you're deploying this image, read
+[`docs/CHAPTARR_INTEGRATION.md`](docs/CHAPTARR_INTEGRATION.md) for
+Chaptarr-side setup, environment variables, and the data-model
+quirks that shaped the fork. For fork-maintenance concerns (merging
+upstream, insertion points, invariants) see
+[`FORK_NOTES.md`](FORK_NOTES.md).
 
 ## Quick start
 
 ### 1. Pull the image
 
-Public multi-arch image (linux/amd64, linux/arm64) published on every push to `main`:
+Public multi-arch images (linux/amd64, linux/arm64) are published
+on every push to `main`:
 
 ```
-ghcr.io/elbrielle/doplarrchaptarr:main
+ghcr.io/elbrielle/doplarrchaptarr:latest   # follows main
+ghcr.io/elbrielle/doplarrchaptarr:v0.2.0   # pinned release
 ```
 
 ### 2. Configure environment variables
@@ -71,7 +83,7 @@ Docker Compose snippet:
 
 ```yaml
 doplarr:
-  image: ghcr.io/elbrielle/doplarrchaptarr:main
+  image: ghcr.io/elbrielle/doplarrchaptarr:latest
   container_name: doplarr
   env_file:
     - /srv/appdata/doplarr/.env

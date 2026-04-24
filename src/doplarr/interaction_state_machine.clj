@@ -108,24 +108,12 @@
         {:keys [user-id channel-id]} interaction]
     (letfn [(msg-resp [msg] (->> @(m/edit-original-interaction-response! messaging bot-id token (discord/content-response msg))
                                  (else #(fatal % "Error in message response"))))]
-      ;; Immediately replace the confirmation embed with a progress
-      ;; message. Three effects matter:
-      ;;  - User sees the click took effect (the current silent ACK
-      ;;    leaves the confirmation embed unchanged until the request
-      ;;    finishes, which on the Chaptarr placeholder-remediation
-      ;;    path is up to 60s — Live Test 17 showed users re-clicking
-      ;;    and then seeing Discord's generic 'This interaction failed'
-      ;;    because the second click landed on a stale component).
-      ;;  - `discord/content-response` returns `:components []`, so the
-      ;;    Request/Cancel buttons are stripped from the message. The
-      ;;    user physically cannot re-click, which closes the
-      ;;    duplicate-click pathway entirely (narrow race in the
-      ;;    initial tens of ms before this edit lands remains; track
-      ;;    separately if it surfaces).
-      ;;  - For book/audiobook requests specifically, tell the user
-      ;;    the slow path exists so 'it's taking a while' doesn't feel
-      ;;    like a bug. Other backends (Sonarr/Radarr/Overseerr) are
-      ;;    fast enough that the generic message is fine.
+      ;; Replace the confirmation embed with a progress message
+      ;; before blocking on the backend. This does three things at
+      ;; once: makes the click feel responsive, strips the Request
+      ;; button (via :components [] in content-response) so the user
+      ;; can't double-click, and warns book/audiobook requesters that
+      ;; the Chaptarr path may take up to a minute.
       (msg-resp (if (contains? #{:book :audiobook} media-type)
                   "Working on your Chaptarr request. This may take up to a minute."
                   "Working on your request."))

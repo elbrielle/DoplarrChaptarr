@@ -53,17 +53,12 @@
     (subs release-date 0 4)))
 
 (defn cover-url
-  "Pull a cover URL out of a Chaptarr book-shape map (either a /book/lookup
-  result or a resolved row from /book?authorId=...). Preference order:
-  explicit coverType=\"cover\" at the book level, then the book's first
-  image, then any edition cover, then the legacy remoteCover field just
-  in case a Chaptarr build still emits it.
-
-  Shape note: for /book/lookup results the URLs are typically relative
-  /MediaCoverProxy/... paths; for resolved book rows post-POST the URLs
-  are absolute upstream URLs (e.g. https://m.media-amazon.com/...). See
-  CHAPTARR_INTEGRATION.md §3.14 and §3.17. Callers decide what to do
-  with whichever shape they get."
+  "Pull a cover URL out of a Chaptarr book-shape map (lookup result or
+  resolved row). Prefers explicit coverType='cover' at the book level,
+  then the book's first image, then any edition cover, then legacy
+  remoteCover. Lookup results carry relative /MediaCoverProxy/... paths;
+  resolved rows usually carry absolute upstream URLs. Callers decide
+  how to handle either shape."
   [kebab]
   (or (->> (:images kebab)
            (filter #(= "cover" (:cover-type %)))
@@ -79,18 +74,9 @@
       (:remote-cover kebab)))
 
 (defn absolutify-cover-url
-  "Chaptarr returns cover paths like /MediaCoverProxy/.../...jpeg — relative to
-  the Chaptarr server. Discord's embed API rejects non-absolute URLs with a
-  50035 Invalid Form Body on the image field, so we have to either prepend a
-  publicly-reachable Chaptarr base URL or drop the image entirely.
-
-  Returns:
-  - the URL unchanged if it's already absolute (http:// or https://)
-  - CHAPTARR__PUBLIC_URL prepended (trailing slash trimmed) if the user has
-    configured a publicly-reachable Chaptarr address and the path is relative
-  - nil if the path is relative and no public URL is configured — the caller
-    should omit :image from the embed entirely rather than sending a relative
-    or null URL"
+  "Discord rejects relative image URLs with a 50035. Returns the URL
+  unchanged if already absolute, prepends CHAPTARR__PUBLIC_URL if
+  configured, or nil if neither applies (caller should omit :image)."
   [url]
   (when (string? url)
     (cond
@@ -106,12 +92,10 @@
       (when-not (str/blank? trimmed) trimmed))))
 
 (defn- strip-html
-  "Remove HTML tags and decode a handful of common entities from a description
-  string. Chaptarr's book overview comes from upstream metadata sources that
-  occasionally emit malformed markup (e.g. unclosed <i> tags) — running it
-  through a strict HTML parser would choke. A simple tag-stripping regex plus
-  entity decode produces a predictable plain-text output that Discord embed
-  descriptions render cleanly."
+  "Remove HTML tags and decode common entities. Chaptarr's upstream
+  metadata occasionally emits malformed markup (unclosed <i>, etc.) —
+  regex stripping is more forgiving than a strict HTML parser and
+  produces plain text that Discord embeds render cleanly."
   [s]
   (when (string? s)
     (-> s
@@ -127,30 +111,16 @@
         str/trim)))
 
 (defn process-book-search-result
-  "Normalize Chaptarr's /book/lookup output into the shape Doplarr expects.
+  "Normalize Chaptarr's /book/lookup output into the shape Doplarr
+  expects. Flattens the embedded author, builds a \"Title — Author\"
+  display title for the dropdown, and strips HTML from the overview.
 
-  Chaptarr (Readarr fork) returns a book object with an embedded author. We
-  flatten the pieces needed downstream.
-
-  Post-processing applied here:
-  - Trim leading/trailing whitespace on title and author-name (Chaptarr's
-    metadata source occasionally emits leading spaces, e.g. \" The Book of
-    Lost Hours\").
-  - Build :title as \"Title — Author\" when the author is known, so the
-    Discord search dropdown disambiguates same-title results without needing
-    a separate template in discord.clj.
-  - Strip HTML tags from the overview; Chaptarr sources can contain malformed
-    markup that Discord embed descriptions would render literally.
-  - `existing-book-id` is set only when the book is already in the library
-    (Chaptarr uses id=0 for not-yet-added books).
-  - `existing-author-id` is set when the AUTHOR is already in the library
-    even if the specific edition isn't. Chaptarr's lookup populates
-    `author.id` with the real author id when the author has been added
-    before. Used downstream by `resolve-target-book!` to skip POST entirely
-    for existing authors — big-catalog authors with slow metadata refresh
-    (e.g. Brandon Sanderson, 172 books) otherwise caused 40+ second embed
-    renders while polling for a just-POSTed placeholder to resolve. See
-    §3.19."
+  `:existing-book-id` is populated when the book is already indexed
+  (Chaptarr uses id=0 for not-yet-added books). `:existing-author-id`
+  is populated when lookup includes author.id directly — rare,
+  because lookup usually queries the external metadata source, so
+  `find-existing-author` is the usual route for existing-author
+  detection."
   [result]
   (let [kebab (utils/from-camel result)
         existing-id (:id kebab)
@@ -175,20 +145,13 @@
                            existing-author)}))
 
 (def ^:private junk-title-phrases
-  "Case-insensitive substring markers that tag a `/book/lookup` result as a
-  study guide, summary, or unauthorized companion rather than the original
-  work. Chaptarr's upstream metadata source pulls these in alongside real
-  editions, and they crowd out legitimate alternative editions in the
-  Discord dropdown. See CHAPTARR_INTEGRATION.md §3.18.
-
-  Deliberately conservative — only multi-word phrases that essentially
-  never appear in legitimate book titles. Bare words like 'guide',
-  'summary', or 'analysis' are avoided because plenty of real books
-  contain them ('A Field Guide to ...', 'Summary Judgment', etc.).
-
-  If a user specifically wants a study guide, they can still request
-  one via Chaptarr's own UI — Doplarr is for requesting books to
-  read, not companion study material."
+  "Case-insensitive substring markers that tag a lookup result as a
+  study guide / summary / unauthorized companion. Chaptarr's upstream
+  pulls these in alongside real editions, crowding out real results
+  in the dropdown. Deliberately conservative — only multi-word
+  phrases that essentially never appear in legitimate book titles,
+  to avoid false positives (a bare 'guide' or 'summary' matches too
+  many real works)."
   #{"study guide"
     "study guides"
     "sparknotes"
@@ -249,12 +212,11 @@
    (str "/book/" id)))
 
 (defn status
-  "Determine whether a book already added to Chaptarr is available/processing
-  for the requested format. Returns nil when the book is not yet added or not
-  monitored for this format. Uses format-specific statistics only — the
-  book-level hasFile field is format-agnostic in Readarr/Chaptarr (true when
-  any format has a file) and would cross-contaminate the format-specific
-  contract if consulted here."
+  "Return `:available` or `:processing` for a book already monitored
+  in the requested format, nil otherwise. Reads format-specific
+  statistics — the book-level hasFile field in Readarr/Chaptarr is
+  format-agnostic (true when any format has a file) and would
+  cross-contaminate this check."
   [details media-type]
   (let [audiobook? (= media-type :audiobook)
         monitored? (if audiobook?
@@ -268,23 +230,12 @@
       (if (pos? file-count) :available :processing))))
 
 (defn monitor-book
-  "Tell Chaptarr to start monitoring a book. Uses the bulk `/book/monitor`
-  endpoint — the only endpoint in this Chaptarr build that actually accepts
-  monitor-flag changes for a book row.
-
-  `PUT /book/{id}` looks like it should work (the UI's Edit Book form uses
-  it, it happily accepts our kebab→camel roundtrip of the existing record
-  with a flag flipped, and it returns 2xx with the 'updated' body) — but
-  Chaptarr silently drops the monitor change on write. That was the root
-  cause of the 'Cannot enable ebook monitoring' spurious log messages and
-  the `ebookMonitored: false` residue observed across Live Tests 3-6. See
-  CHAPTARR_INTEGRATION.md §3.15.
-
-  Chaptarr derives which per-format flag to flip (`ebookMonitored` vs
-  `audiobookMonitored`) from the book row's own `mediaType`, so the payload
-  stays minimal: just `bookIds` + `monitored`. The response is 202 Accepted
-  with a small status snippet (no updated book body), so callers must
-  follow up with a GET /book/{id} if they want to verify the flip landed."
+  "Flip a book's monitor flag on via the bulk `/book/monitor`
+  endpoint. `PUT /book/{id}` looks like it should work but silently
+  drops monitor changes. `/book/monitor` derives which per-format
+  flag to flip from the row's mediaType, so the payload stays
+  minimal: `{bookIds, monitored}`. Returns 202 with only a status
+  snippet; callers must re-GET to verify the flip landed."
   [book-id]
   (a/go
     (let [payload {:bookIds [book-id] :monitored true}]
@@ -305,24 +256,12 @@
          (then (constantly nil)))))
 
 (defn refresh-author
-  "Fire Chaptarr's RefreshAuthor command. Tells Chaptarr to re-pull the
-  full catalog for this author from its upstream metadata source
-  (Hardcover / Goodreads / AudiMeta) and re-apply the metadata profile's
-  edition filters.
-
-  Used to try resolving skeleton placeholder rows — rows with
-  `default-*` foreignEditionIds, null releaseDate, and empty images —
-  into real editions. Chaptarr treats metadata as author-level, so a
-  per-book refresh isn't a reliable fix (community reports of
-  `RefreshBook` throwing 'Error occurred while executing task' errors
-  confirm this). RefreshAuthor re-pulls everything for the author at
-  once.
-
-  Mildly destructive: RefreshAuthor re-applies the author's metadata
-  profile language filters and can cull editions, so only fire it when
-  the current target is a placeholder (nothing useful to cull). See
-  §3.20 and the `all_book_editions_but_one_deleted_upon_refresh`
-  community thread."
+  "Fire Chaptarr's `RefreshAuthor` command to re-pull the author's
+  full catalog from its upstream metadata source. Used to try to
+  resolve skeleton placeholder rows into real editions. Mildly
+  destructive — RefreshAuthor re-applies metadata profile language
+  filters and can cull editions, so callers should only fire it when
+  the target row is a placeholder (nothing useful to cull)."
   [author-id]
   (a/go
     (info (str "Chaptarr command: RefreshAuthor authorId=" author-id))
@@ -338,11 +277,10 @@
    (str "/author/" author-id)))
 
 (defn authors
-  "Fetch all authors currently indexed in Chaptarr (GET /api/v1/author).
-  Used by `find-existing-author` to detect existing-author status
-  when the lookup result's embedded `author.id` is 0 — which it is for
-  most lookup results because Chaptarr's lookup queries the external
-  metadata source, not its internal library. See §3.19."
+  "Fetch all authors currently indexed in Chaptarr. Used by
+  `find-existing-author` because lookup results almost always return
+  `author.id=0` (lookup queries the external metadata source, not
+  the local library)."
   []
   (utils/request-and-process-body
    GET
@@ -351,10 +289,7 @@
 
 (defn- normalize-author-name
   "Fold an author name for equality comparison: lowercase, collapse
-  whitespace, strip surrounding whitespace. Used by
-  `find-existing-author` to match lookup-result authors against
-  indexed ones when foreignAuthorId differs across provider
-  namespaces. See §3.19."
+  whitespace, strip surrounding whitespace."
   [s]
   (when (string? s)
     (-> s
@@ -363,25 +298,19 @@
         str/trim)))
 
 (defn find-existing-author
-  "Look up Chaptarr's indexed authors for a match against a lookup
-  result's author. Returns `{:id ..., :via <path-keyword>}` on match,
-  or nil when no match.
+  "Match a lookup-result author against Chaptarr's indexed authors.
+  Returns `{:id ..., :via <keyword>}` on match, nil on no-match or
+  ambiguous multi-match.
 
-  Match strategy, in order:
-  1. **foreignAuthorId equality** (`:via :foreign-author-id`). Cheapest
-     and least ambiguous. Works when Chaptarr's stored provider-id
-     agrees with the lookup's — usually true for freshly-added
-     authors.
-  2. **Normalized author-name, single match** (`:via :author-name`).
-     Fallback for when lookup and stored library disagree on
-     provider-id (Live Test 14 surfaced Brandon Sanderson stored as
-     `hc:204214` but looked up as `gr:38550` — same author, different
-     metadata source). Only fires when exactly one indexed author
-     matches the name; multi-matches return nil rather than risk
-     resolving to the wrong author on common names.
-
-  Returns nil on multi-name-match (ambiguous) or no-match (genuinely
-  new author). Caller should POST in those cases."
+  Strategy:
+    1. foreignAuthorId equality (:foreign-author-id). Fails when
+       lookup and stored library disagree on provider namespace —
+       e.g. the lookup returns `gr:38550` but Chaptarr stored the
+       author as `hc:204214` after Hardcover normalization.
+    2. Normalized author-name, single match (:author-name). Bridges
+       provider-namespace disagreement. Only fires when exactly one
+       indexed author matches the name — multi-matches return nil
+       rather than risk resolving to the wrong author on common names."
   [foreign-author-id author-name]
   (a/go
     (let [result (a/<! (authors))]
@@ -402,21 +331,12 @@
                 {:id (:id (first by-name)) :via :author-name}))))))))
 
 (defn ensure-author-enabled-for-format
-  "Chaptarr refuses to enable per-book monitoring when the author-level
-  *MonitorFuture flag for that format is false — the PUT succeeds over
-  HTTP but the change is silently dropped, logged on the Chaptarr side
-  as 'author is not monitored for ebooks' (or audiobooks). This helper
-  fetches the author record and, if the relevant flag isn't already set,
-  PUTs the author with it flipped to true before the caller proceeds to
-  flip a specific book's monitor flag.
-
-  Idempotent — no-op when the flag is already true, which is the common
-  case for fresh author-adds (request-payload sets it based on the
-  requested format). Does real work on cross-format re-requests
-  (/request book then later /request audiobook on the same author)
-  where the author was originally added with only one format enabled.
-
-  See CHAPTARR_INTEGRATION.md §3.12."
+  "Flip the author's `*MonitorFuture` flag on for the requested format
+  if it isn't already. Chaptarr silently drops per-book monitor PUTs
+  when this flag is false, logging \"author is not monitored for ...\"
+  server-side. Idempotent. Does real work on cross-format re-requests
+  (e.g. an audiobook request against an author originally added for
+  ebooks only)."
   [author-id media-type]
   (a/go
     (let [author (a/<! (get-author author-id))
@@ -433,29 +353,23 @@
                       :content-type :json})))))))
 
 (defn request-payload
-  "Build the POST /api/v1/book body for Chaptarr, used to create the author
-  and its catalog of book entities in an all-unmonitored state.
+  "Build the `POST /api/v1/book` body. Creates the author and seeds
+  its full catalog in an all-unmonitored state — the caller flips the
+  requested format's monitor flag afterwards on the specific book row.
 
-  Two things this payload explicitly does NOT do, despite looking like it
-  should:
+  Two non-obvious choices:
 
-  1. It does not set book-level monitor flags to true. Chaptarr's
-     AddBookService, when given monitored=true on a POST, auto-sets the
-     format-specific flag on every matching edition regardless of what the
-     caller specified — a single POST ends up with both ebookMonitored and
-     audiobookMonitored flipped on different book rows. See
-     CHAPTARR_INTEGRATION.md §3.6. To get format-specific monitoring, the
-     fork POSTs everything unmonitored, then PUTs the specific book entity
-     for the requested format afterwards.
-  2. It does not rely on addOptions.searchForNewBook. Observed to
-     add-and-monitor without firing a release search in practice. The fork
-     fires an explicit /command BookSearch after the PUT (see
-     `search-book`).
+    - `monitored: false` everywhere on the body. If Chaptarr's
+      AddBookService sees monitored=true on a POST it auto-flips
+      format flags on every matching edition, cross-contaminating
+      formats. Format-specific monitoring requires an unmonitored
+      POST + a targeted PUT.
+    - `addOptions.searchForNewBook: false`. Doesn't reliably trigger
+      a release search; we fire BookSearch explicitly after the PUT.
 
-  The author record still needs all four per-format profile IDs populated
-  or it lands without usable config — the singular qualityProfileId /
-  metadataProfileId fields are silently ignored. See
-  CHAPTARR_INTEGRATION.md §3.2."
+  All four per-format profile ids must be populated — Chaptarr
+  silently ignores the singular `qualityProfileId` and
+  `metadataProfileId` fields."
   [payload]
   (let [{:keys [title raw-title foreign-book-id foreign-author-id author-name
                 ebook-quality-profile-id audiobook-quality-profile-id
@@ -486,13 +400,9 @@
               :root-folder-path chosen-rootfolder
               :ebook-root-folder-path    ebook-rootfolder-path
               :audiobook-root-folder-path audiobook-rootfolder-path
-              ;; *MonitorFuture is Chaptarr's author-level gate for per-book
-              ;; monitoring of that format. Setting it false makes Chaptarr
-              ;; silently reject book-level ebookMonitored=true PUTs later
-              ;; (logged as "author is not monitored for ebooks"). Enable
-              ;; it for the requested format so the post-POST PUT on the
-              ;; specific book can actually flip its monitor flag. See
-              ;; CHAPTARR_INTEGRATION.md §3.12.
+              ;; Author-level gates for per-book monitoring; without
+              ;; these, later `PUT /book/monitor` PUTs are silently
+              ;; dropped.
               :ebook-monitor-future     (= media-type :book)
               :audiobook-monitor-future (= media-type :audiobook)
               :monitored true
@@ -503,9 +413,9 @@
      :add-options {:search-for-new-book false}}))
 
 (defn books-for-author
-  "Fetch all book entities under a given author id. Chaptarr returns one book
-  row per edition/language (see CHAPTARR_INTEGRATION.md §3.5), so one author
-  can have multiple book ids for what looks like the same title."
+  "Fetch all book entities under a given author. Chaptarr returns one
+  row per edition/language, so a single work typically has many rows
+  with variant titles."
   [author-id]
   (utils/request-and-process-body
    GET
@@ -518,34 +428,24 @@
 (declare book-matches-format? book-row-complete? title-matches?)
 
 (defn wait-for-resolved-book
-  "Poll /book?authorId=... until the requested edition has materialized, or
-  we hit the attempt cap.
+  "Poll /book?authorId=... until the requested edition materializes
+  or we hit the attempt cap. Chaptarr's POST /book returns before the
+  metadata source has resolved the author's catalog; until then the
+  only rows that exist are skeleton placeholders.
 
-  Chaptarr's POST /book returns before the metadata source has fully
-  resolved the author's catalog — immediately after POST, the only rows
-  that exist may be skeleton placeholders with `default-*` foreignEditionIds,
-  null releaseDate, and empty images. Chaptarr silently rejects monitor-flag
-  PUTs against those rows (returns 2xx, drops the write, logs
-  'author is not monitored for <format>' server-side). Real edition rows
-  appear within a few seconds as Chaptarr's background refresh populates them.
+  Exit conditions, first wins:
+    - `requested-title` provided AND a format-matching, complete row
+      matches that title: return books. The title gate prevents early
+      exits on big-catalog authors whose backlog entries resolve
+      before the requested edition does.
+    - No `requested-title`: any format-matching complete row is
+      sufficient.
+    - Attempt cap hit: return whatever we have with a WARN; the
+      monitor-PUT verification in `chaptarr.clj/request` catches any
+      silent failures downstream.
 
-  Exit conditions (first wins):
-  - When a `requested-title` is provided AND at least one book under the
-    author matches both the requested format and that title AND passes
-    `book-row-complete?` — return books. Prevents early exits on
-    big-catalog authors (Live Test 8: Kristin Hannah had dozens of
-    backlog books resolve before 'The Women' did; without this guard,
-    polling would exit on those and the ranker fallback would pick the
-    wrong title).
-  - Otherwise (no title supplied, or we've already hit max-attempts and
-    still no title match), any resolved format-matching row is good
-    enough to proceed.
-  - Attempt cap hit — return whatever we have so the flow still proceeds
-    with a WARN; the PUT-response verification in `chaptarr.clj/request`
-    catches silent failures downstream.
-
-  Defaults (max-attempts 20, interval-ms 1000) yield a ~20s ceiling. Well
-  under Discord's 15-minute interaction auth window."
+  Defaults (20 attempts × 1s) give a ~20s ceiling, well under
+  Discord's 15-minute interaction-auth window."
   ([author-id media-type]
    (wait-for-resolved-book author-id media-type nil {}))
   ([author-id media-type requested-title]
@@ -587,10 +487,9 @@
            (recur (inc attempt))))))))
 
 (defn book-matches-format?
-  "True when a book entity's format discriminator matches the requested
-  media-type. Prefers Chaptarr's mediaType field, falling back to
-  edition.isEbook. Used after POST /book to find the one row matching the
-  user's format choice among a multi-edition author catalog."
+  "True when a book row's format discriminator matches the requested
+  media-type. Prefers `mediaType`, falls back to `edition.isEbook`
+  when absent."
   [book media-type]
   (let [target-mt (if (= media-type :audiobook) "audiobook" "ebook")
         media-type-field (:media-type book)
@@ -604,22 +503,15 @@
       :else false)))
 
 (defn book-row-complete?
-  "True when a Chaptarr book row looks like a resolved edition rather than a
-  skeleton/placeholder. Chaptarr creates placeholder rows during author-add
-  before the metadata source has populated them — those rows have empty
-  images, null releaseDate, zero ratings, and a foreignEditionId that
-  starts with \"default-\" (literal placeholder marker). Chaptarr silently
-  rejects monitor-flag PUTs against placeholder rows. See
-  CHAPTARR_INTEGRATION.md §3.13.
+  "True when a book row looks like a resolved edition rather than a
+  skeleton placeholder. A row counts as resolved when all of these
+  hold:
+    - releaseDate is set
+    - images[] is non-empty
+    - foreignEditionId is present and does not start with `default-`
 
-  A row is considered resolved when ALL of these hold:
-  - releaseDate is set
-  - images[] is non-empty
-  - foreignEditionId is present and does not start with \"default-\"
-
-  Public because chaptarr.clj's placeholder remediation path needs to
-  decide whether the target-book just picked is resolvable-as-is or
-  needs a RefreshAuthor kick."
+  Chaptarr silently drops monitor PUTs against placeholders, so
+  callers upstream of monitor-book must gate on this predicate."
   [book]
   (let [edition-id (:foreign-edition-id book)]
     (and (:release-date book)
@@ -628,10 +520,9 @@
          (not (str/starts-with? edition-id "default-")))))
 
 (defn- normalize-title
-  "Fold a title down to a comparable form: lowercase, Unicode punctuation
-  stripped, whitespace collapsed. Lets `title-matches?` treat stylistic
-  variants as equivalent (e.g. 'Monk & Robot' vs 'Monk and Robot', 'The
-  Women: A Novel' vs 'The Women')."
+  "Fold a title for comparison: lowercase, strip Unicode punctuation,
+  collapse whitespace. Treats stylistic variants as equivalent (e.g.
+  'Monk & Robot' vs 'Monk and Robot')."
   [s]
   (when (string? s)
     (-> s
@@ -641,18 +532,12 @@
         str/trim)))
 
 (defn- title-matches?
-  "Does a Chaptarr book row's title match the user-requested title closely
-  enough to say 'this row is the book they asked for'?
-
-  Exact-after-normalization wins. Containment either direction is a
-  weaker fallback that handles subtitled editions (row 'The Women: A
-  Novel' vs requested 'The Women') without catastrophically over-matching.
-  Returns false when either side is nil or empty.
-
-  Used by `wait-for-resolved-book` polling (where we want any plausible
-  match to count as 'the book is ready') and as the widest filter in
-  `preferred-book-for-format`. See `exact-title-match?` for the stricter
-  tier that breaks ties when multiple matches are available."
+  "True when a row's title plausibly matches the requested title:
+  exact-after-normalization, or containment either direction.
+  Containment handles subtitled editions (row 'The Women: A Novel'
+  vs requested 'The Women') without over-matching wildly. Used as
+  the widest filter — `exact-title-match?` breaks ties when multiple
+  candidates pass this one."
   [row requested]
   (let [a (normalize-title (:title row))
         b (normalize-title requested)]
@@ -663,33 +548,26 @@
               (str/includes? b a))))))
 
 (defn- exact-title-match?
-  "Stricter variant of `title-matches?` — only the exact-after-normalization
-  case counts. Used by `preferred-book-for-format` to tier-prefer exact
-  matches over substring matches when an author has both.
-
-  Live Test 12 surfaced the Jennette McCurdy case: Chaptarr's catalog
-  had both row 11514 (title='I'm Glad My Mom Died', placeholder) and
-  row 2619 (title='I'm Glad My Mom Died By Jennette McCurdy, Fight!:
-  Thirty Years Not Quite at the Top', resolved anthology). The old
-  substring-match-and-rank logic picked 2619 because it was complete,
-  which then caused Chaptarr to search MaM for the anthology title
-  and find zero results. Preferring exact-match rows fixes this
-  class of selection error even when the exact match is a placeholder."
+  "Strict variant of `title-matches?` — only exact-after-normalization.
+  Used to tier-prefer exact matches over substring matches. Matters
+  when an author's catalog contains an anthology row whose title is
+  `\"<requested title> By <author>, <other work>\"` — substring match
+  would pass it, but an exact-match placeholder on the same work is
+  a better pick because the indexer search uses the row's title
+  verbatim and the anthology title won't match any release."
   [row requested]
   (let [a (normalize-title (:title row))
         b (normalize-title requested)]
     (boolean (and (seq a) (seq b) (= a b)))))
 
 (defn- format-match-rank
-  "Score how confidently a Chaptarr book row matches the requested format, and
-  how complete/resolved that row is. Higher is better. Scoring:
-
-  +10 row is a resolved edition (not a placeholder)
-   +2 explicit mediaType match
-   +1 edition.isEbook fallback match (used when mediaType field absent)
-    0 anything else
-
-  Resolved editions always outrank placeholders with the same format match."
+  "Score a row on format confidence and resolved-vs-placeholder state.
+  Higher is better.
+    +10  resolved edition (per `book-row-complete?`)
+     +2  explicit mediaType match
+     +1  edition.isEbook fallback (when mediaType absent)
+      0  otherwise
+  Resolved rows always outrank placeholders with the same format match."
   [book media-type]
   (let [target-mt (if (= media-type :audiobook) "audiobook" "ebook")
         media-type-field (:media-type book)
@@ -705,37 +583,21 @@
     (+ base-rank (if (book-row-complete? book) 10 0))))
 
 (defn- title-length-affinity
-  "Return a non-positive integer: negative of the absolute distance
-  between the row's normalized title length and the requested
-  title's normalized title length. Higher (closer to zero) is a
+  "Tie-breaker for the substring-match tier: negative absolute
+  distance between the row's normalized title length and the
+  requested title's normalized length. Higher (closer to zero) is a
   better match.
 
-  Used as a tie-breaker within the substring-match tier of
-  `preferred-book-for-format`. Rows with marketing-heavy edition
-  titles (e.g. 'The Trial by Franz Kafka: A Masterpiece of Modern
-  Literature Exploring Power, Bureaucracy, and Existential Struggle
-  (Grapevine Edition)') have titles that substring-match the
-  requested 'The Trial' but are ~100 characters longer than a
-  cleaner edition like 'The Trial (Penguin Classics)'. Length
-  affinity penalizes the bloated row so selection lands on a
-  tighter-titled edition. Matters because Chaptarr feeds the
-  selected row's raw title verbatim to the release indexer — the
-  shorter the row title, the better the indexer match. Live Test
-  18 surfaced the Kafka case.
+  Marketing-heavy edition titles substring-match the request but add
+  ~100 characters of publisher fluff (\"...by <author>: A Masterpiece
+  of... (Publisher Edition)\"), which Chaptarr then feeds to the
+  release indexer verbatim and poisons matching. A cleaner row with
+  a shorter title wins the tie.
 
-  Intentionally NOT a filter — a noisy-title row is still a
-  legitimate candidate if nothing better is available. Length
-  affinity only moves the decision when two format-matched,
-  completeness-equal rows are competing; in single-candidate
-  tiers it's a no-op.
-
-  Within the exact-title tier, all rows have identical normalized
-  titles by construction, so length affinity collapses to zero
-  everywhere — no effect.
-
-  Nil or empty titles/requests collapse to zero (no preference
-  expressed), keeping the ranker monotonic in edge cases where
-  either side lacks a comparable string."
+  Not a filter — a noisy row is still a legitimate candidate when
+  nothing better exists. No-op within the exact-title tier (all
+  normalized titles have the same length by construction). Nil or
+  empty inputs collapse to zero."
   [row requested-title]
   (let [row-len (count (or (normalize-title (:title row)) ""))
         req-len (count (or (normalize-title requested-title) ""))]
@@ -744,37 +606,19 @@
       0)))
 
 (defn preferred-book-for-format
-  "Choose the best Chaptarr book row for a requested format when an author
-  has multiple matching editions. Preference order:
+  "Choose the best book row for a requested format when an author has
+  multiple matching editions. Tier-filter by title match (exact >
+  substring > no-match), then within the selected tier sort by:
 
-  1. Row's title matches the originally-requested title (normalized).
-     Critical on big-catalog authors — without this step, a highly-popular
-     sibling title can out-rank the requested book after polling finishes
-     (Live Test 8: 'The Women' request on Kristin Hannah's catalog saw
-     'The Nightingale' selected by popularity).
-  2. Resolved edition (has releaseDate + images) over placeholder row
-  3. Explicit mediaType format match over edition.isEbook fallback
-  4. Row title length is close to the requested title's length (beats
-     marketing-heavy edition titles — see `title-length-affinity` and
-     Live Test 18 Kafka case)
-  5. Higher ratings.popularity
-  6. Higher ratings.votes (more established edition)
-  7. Newer releaseDate
+    1. format-match-rank (resolved > placeholder, exact mediaType
+       match > isEbook fallback)
+    2. title-length-affinity (tighter titles beat marketing fluff)
+    3. ratings.popularity
+    4. ratings.votes
+    5. releaseDate (newer wins)
 
-  When `requested-title` is nil or no row matches it (e.g. Chaptarr's
-  lookup translated a series query to a specific title not present in the
-  catalog under that exact spelling), falls back to ranking across all
-  format-matching rows — better to target the author's most popular ebook
-  than to fail the request.
-
-  The popularity and votes fields live under a nested `ratings` object on
-  Chaptarr book rows, not at the top level. Placeholder rows have no
-  ratings and so collapse to all-zero for these tiebreaks, letting the
-  resolved editions win cleanly.
-
-  Avoids blindly taking the first row returned by /book?authorId=..., the
-  ordering of which is not stable across metadata sources, and prevents
-  targeting a placeholder row whose monitor PUT would be silently dropped."
+  Falls back to all format-matching rows if no title match — better
+  to target the author's most popular edition than to fail outright."
   ([books media-type]
    (preferred-book-for-format books media-type nil))
   ([books media-type requested-title]
@@ -784,7 +628,7 @@
          ;; with combined title containing the requested title), we want
          ;; the exact match even if it's a placeholder. Without this,
          ;; Chaptarr searches MaM for the anthology's combined title
-         ;; and finds nothing. See §3.19 / Live Test 12 Jennette case.
+         ;; and finds nothing. See `exact-title-match?` for details.
          exact-matched (when requested-title
                          (seq (filter #(exact-title-match? % requested-title)
                                       format-filtered)))
@@ -800,45 +644,20 @@
                 (seq format-filtered))
        (warn (str "preferred-book-for-format: no " (name media-type)
                   " row matched requested title '" requested-title
-                  "' (exact or substring) — falling back to popularity-"
-                  "ranked row among " (count format-filtered)
-                  " format-matching candidates. Chaptarr may have "
-                  "resolved a different canonical title for this request "
-                  "(e.g. series name → first book).")))
+                  "' — falling back to popularity-ranked row among "
+                  (count format-filtered) " format-matching candidates.")))
      (let [winner (->> candidates
                        (sort-by (fn [book]
                                   [(format-match-rank book media-type)
-                                   ;; Length-affinity is the second
-                                   ;; ranker so noisy edition titles lose
-                                   ;; to cleaner ones BEFORE popularity
-                                   ;; kicks in. Inside the exact tier
-                                   ;; this is a no-op (all titles
-                                   ;; normalize to the same length), so
-                                   ;; it only differentiates within
-                                   ;; substring and format-only tiers.
                                    (title-length-affinity book requested-title)
                                    (or (get-in book [:ratings :popularity]) 0)
                                    (or (get-in book [:ratings :votes]) 0)
                                    (or (:release-date book) "")]))
                        last)]
-       ;; One info line per selection so operators can see which tier
-       ;; won and how close the winning title's length was to the
-       ;; request. Matters for diagnosing 'Chaptarr searched MaM with
-       ;; a weird title' cases — you can tell at a glance whether the
-       ;; ranker was operating in the exact, substring, or no-match
-       ;; tier. See §3.22.
-       ;;
-       ;; `winner-any-edition-ok` and `winner-hardcover-book-id` are
-       ;; observability-only — not currently consumed by the ranker.
-       ;; `anyEditionOk` is Chaptarr's own 'this row has usable
-       ;; editions' verdict and the Moonrock probe confirmed it's
-       ;; present (true on resolved rows, false on placeholders);
-       ;; logging it lets us decide whether to promote it to a
-       ;; ranker signal after watching a few live cases. The
-       ;; Hardcover IDs are logged as `nil` on the current Chaptarr
-       ;; build (the field isn't exposed on resolved rows, per
-       ;; probe), so this is future-proof scaffolding for if/when
-       ;; Chaptarr exposes them uniformly.
+       ;; One info line per selection. `winner-any-edition-ok` and
+       ;; `winner-hardcover-book-id` are observability-only — logged
+       ;; so operators can see whether those signals would have
+       ;; changed a pick, but not currently consumed by the ranker.
        (when (and requested-title winner)
          (info (str "Chaptarr preferred-book-for-format: tier=" (name tier)
                     " exact-count=" (count (or exact-matched []))
@@ -855,8 +674,8 @@
        winner))))
 
 (defn extract-author-id
-  "Pull the newly-created author's id out of the POST /book response body.
-  Chaptarr's response is the created Book object, which includes its parent
+  "Pull the newly-created author's id out of a POST /book response.
+  Chaptarr echoes the created Book object, which carries its parent
   authorId at the top level."
   [post-response]
   (let [body (:body post-response)
@@ -865,19 +684,12 @@
         (get-in kebab [:author :id]))))
 
 (defn download-cover
-  "Fetch cover image bytes from Chaptarr's internal MediaCoverProxy endpoint.
-  Used when a cover URL is relative (i.e. CHAPTARR__PUBLIC_URL is not set)
-  so the bytes can be attached directly to the Discord embed instead of
-  asking Discord to fetch them over the public internet.
-
-  Chaptarr is always reachable at CHAPTARR__URL from Doplarr's container
-  (both live on the same Docker network), so this path works for any
-  deployment regardless of whether Chaptarr is publicly exposed.
-
-  Returns a channel yielding the byte array on success, or an exception on
-  failure. The caller should handle the exception path gracefully — a
-  failed download should not block the user's request; the confirmation
-  embed just renders without a cover."
+  "Fetch cover-image bytes from Chaptarr's MediaCoverProxy endpoint.
+  Used when CHAPTARR__PUBLIC_URL isn't configured: the bytes are
+  attached directly to the Discord embed rather than asking Discord
+  to fetch them over the public internet. Returns a channel yielding
+  the byte array or an exception; failures should never block the
+  request — the embed just renders coverless."
   [cover-path]
   (let [chan (a/promise-chan)]
     (hc/request
