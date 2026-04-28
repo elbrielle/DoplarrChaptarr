@@ -11,6 +11,7 @@
         org.clojure/core.async {:mvn/version "1.8.741"}
         fmnoise/flow {:mvn/version "4.3.0"}
         hato/hato {:mvn/version "1.0.0"}
+        cheshire/cheshire {:mvn/version "6.1.0"}
         com.taoensso/timbre {:mvn/version "6.8.0"}
         camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.3"}}
 

@@ -75,10 +75,21 @@
    :disabled false
    :label (apply str (take MAX-CHARACTERS label))})
 
+(defn- option-description [result]
+  (when-let [year (:year result)]
+    (let [description (str year)]
+      (when-not (str/blank? description)
+        description))))
+
+(defn- option-label [result]
+  (let [label (str/trim (str (or (:title result) (:name result) "Untitled result")))]
+    (apply str (take MAX-CHARACTERS label))))
+
 (defn select-menu-option [index result]
-  {:label (apply str (take MAX-CHARACTERS (or (:title result) (:name result))))
-   :description (:year result)
-   :value index})
+  (let [description (option-description result)]
+    (cond-> {:label (option-label result)
+             :value (str index)}
+      description (assoc :description description))))
 
 (defn dropdown [content id options]
   {:content content

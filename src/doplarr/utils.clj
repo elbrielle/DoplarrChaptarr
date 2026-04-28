@@ -1,5 +1,6 @@
 (ns doplarr.utils
   (:require
+   [cheshire.core :as json]
    [camel-snake-kebab.core :as csk]
    [camel-snake-kebab.extras :as cske]
    [clojure.core.async :as a]
@@ -36,6 +37,15 @@
      put
      put)
     chan))
+
+(defn decode-json-body [body]
+  (if (string? body)
+    (let [trimmed (str/trim body)]
+      (if (or (str/starts-with? trimmed "{")
+              (str/starts-with? trimmed "["))
+        (json/parse-string trimmed)
+        body))
+    body))
 
 (defn from-camel [m]
   (cske/transform-keys csk/->kebab-case-keyword m))
@@ -76,7 +86,7 @@
     (->> (log-on-error
           (a/<! (apply request-fn request-args))
           "Exception from HTTP request")
-         (then #(process-fn (:body %)))
+         (then #(process-fn (decode-json-body (:body %))))
          (else #(fatal %)))))
 
 (defn canonical-option-name [option]
