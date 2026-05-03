@@ -50,13 +50,13 @@ API key is under `Settings → General` in Chaptarr.
 
 Set `CHAPTARR__URL` and `CHAPTARR__API` in the same form as the other
 backends (the URL must include the protocol, e.g. `http://localhost:8789`).
-`CHAPTARR__URL` only needs to be reachable from Doplarr's container —
-confirmation-embed cover images are sourced from public CDNs (OpenLibrary
+`CHAPTARR__URL` only needs to be reachable from Doplarr's container.
+Confirmation-embed cover images are sourced from public CDNs (OpenLibrary
 and Amazon, keyed off the book's ISBN / ASIN), so Chaptarr does not need
 to be exposed to the public internet.
 
 Requests submitted through this bot monitor only the specific book
-requested — the author is added with `monitorNewItems: "none"` so Chaptarr
+requested. The author is added with `monitorNewItems: "none"` so Chaptarr
 does not flood the library with the entire back catalog.
 
 Because ebooks and audiobooks typically live under separate root folders and

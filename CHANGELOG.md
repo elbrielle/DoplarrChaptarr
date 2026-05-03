@@ -7,7 +7,7 @@ Format roughly follows [Keep a Changelog](https://keepachangelog.com/). Version 
 ## [Unreleased]
 
 ### Changed
-- Reworked cover sourcing away from a multipart proxy through Chaptarr, so `CHAPTARR__PUBLIC_URL` is no longer required and Chaptarr can stay on an internal network. Cover attachment via public CDNs (Hardcover, Amazon, Goodreads) with OpenLibrary-by-ISBN and Amazon-by-ASIN fallbacks is in place but currently inconsistent — see Known issues in the README.
+- Reworked cover sourcing away from a multipart proxy through Chaptarr, so `CHAPTARR__PUBLIC_URL` is no longer required and Chaptarr can stay on an internal network. Cover attachment via public CDNs (Hardcover, Amazon, Goodreads) with OpenLibrary-by-ISBN and Amazon-by-ASIN fallbacks is in place but currently inconsistent; see Known issues in the README.
 
 ### Fixed
 - Decode JSON API responses so non-string fields render correctly in confirmations.

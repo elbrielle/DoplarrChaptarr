@@ -7,18 +7,18 @@ new Discord slash subcommands: `/request book` and `/request
 audiobook`. Every upstream backend (Sonarr, Radarr, Overseerr) still
 works unchanged.
 
-This document is for someone maintaining the fork — typically
-merging a new upstream release or touching Chaptarr code. For
-operator-facing integration notes, see
+This document is for whoever is maintaining the fork — usually
+either merging a new upstream release or touching Chaptarr code.
+For operator-facing integration notes, see
 [`docs/CHAPTARR_INTEGRATION.md`](docs/CHAPTARR_INTEGRATION.md).
 
 ## Design stance
 
-Every modification to an upstream file is a **pure insertion** — no
+Every modification to an upstream file is a pure insertion. No
 upstream lines are rewritten or reordered. The Chaptarr-specific
 logic lives in two new files (`backends/chaptarr.clj` and
 `backends/chaptarr/impl.clj`) plus additive entries in the shared
-config/spec/discord/state-machine files. This keeps `git merge
+config/spec/discord/state-machine files. That keeps `git merge
 upstream/main` mechanical: conflicts land on config-key lists and
 resolve by keeping both blocks.
 
@@ -40,7 +40,7 @@ resolve by keeping both blocks.
   `available-backends`.
 - `src/doplarr/config/specs.clj` — four insertions: two required
   spec defs (`:chaptarr/url`, `:chaptarr/api`), one optional block,
-  a `::has-backend` clause, and `::config` `:opt` additions +
+  a `::has-backend` clause, and `::config` `:opt` additions plus a
   `matched-keys` line.
 - `src/doplarr/discord.clj` — three insertions: `:book`/`:audiobook`
   entries in `request-thumbnail`; a `:metadata-profile` binding and
@@ -48,12 +48,12 @@ resolve by keeping both blocks.
   assoc'd when `poster` is non-nil (Discord rejects null image
   URLs).
 - `src/doplarr/interaction_state_machine.clj` — two insertions:
-  `(assoc payload :sm-uuid uuid)` in `query-for-option-or-request`
-  (lets backends stash state back into the cache — Chaptarr uses
-  this to cache the resolved book id after its pre-request POST);
-  and a progress-message edit in `process-event! "request"` before
-  the blocking take (makes long Chaptarr requests feel responsive +
-  strips duplicate-click surface).
+  `(assoc payload :sm-uuid uuid)` in `query-for-option-or-request`,
+  which lets backends stash state back into the cache (Chaptarr
+  uses this to cache the resolved book id after its pre-request
+  POST); and a progress-message edit in `process-event! "request"`
+  before the blocking take, which makes long Chaptarr requests feel
+  responsive and removes the duplicate-click surface.
 - `docs/configuration.md` — a Chaptarr section and five rows in the
   Optional Settings table.
 
@@ -77,7 +77,7 @@ git merge upstream/main
 
 Conflicts are almost always in `config.clj` or `specs.clj` when
 upstream adds a new backend or config key near our insertion
-points. Resolve by keeping both blocks — upstream's new entries
+points. Resolve by keeping both blocks. Upstream's new entries
 and our Chaptarr entries sit alongside each other.
 
 Higher-risk scenarios to watch for (none seen so far):
@@ -95,29 +95,30 @@ Higher-risk scenarios to watch for (none seen so far):
 
 ## Invariants a future maintainer should preserve
 
-These are the decisions that took the longest to arrive at. If
-any of them feel like "cleanup opportunities" in a future
-refactor, read the integration doc first.
+These took the longest to land. If any of them look like a
+"cleanup opportunity" in a future refactor, read the integration
+doc first.
 
 - **Monitor flips go through `PUT /book/monitor`, not `PUT
-  /book/{id}`.** The per-book PUT returns 2xx but silently drops
-  monitor-flag changes. The bulk endpoint is the only one that
-  persists the change. Folding monitor toggles back into the
-  per-book PUT will silently break requests.
+  /book/{id}`.** The per-book PUT returns 2xx but doesn't actually
+  persist monitor-flag changes. The bulk endpoint is the only one
+  that does. Folding monitor toggles back into the per-book PUT
+  will quietly break requests.
 - **All four per-format profile ids on the author POST body.**
-  Chaptarr silently ignores the singular `qualityProfileId` /
-  `metadataProfileId` fields that other *arrs accept. Sending
-  only three of the four leaves the author in an unusable state.
+  Chaptarr ignores the singular `qualityProfileId` /
+  `metadataProfileId` fields that other *arrs accept, with no
+  error. Sending only three of the four leaves the author in an
+  unusable state.
 - **Author's `*MonitorFuture` flag must be true for the format
   before book-level monitor flips.** `ensure-author-enabled-for-format`
-  handles this. Without the gate, Chaptarr silently drops the
-  per-book monitor PUT.
+  handles this. Without the gate, the per-book monitor PUT is
+  dropped server-side.
 - **POST runs at `request-embed` render, not at Request-click.**
   Lookup results don't carry the edition-level identifiers
-  (`isbn13`, `asin`) that the public-CDN cover fallback needs.
+  (`isbn13`, `asin`) the public-CDN cover fallback needs.
   Post-POST resolved rows do. A refactor back to
   confirm-before-commit loses both the primary absolute CDN URL
-  and the fallback identifiers — the embed renders coverless.
+  and the fallback identifiers, and the embed renders coverless.
 - **Selection tiers: exact-title beats substring beats
   no-match.** Inside a tier, resolved rows beat placeholders and
   cleaner titles beat marketing-heavy ones (via
@@ -128,7 +129,7 @@ refactor, read the integration doc first.
   It re-applies metadata profile language filters and can cull
   editions, so firing it preemptively on resolved rows is
   destructive. The `(not book-row-complete?)` gate in
-  `request` is load-bearing.
+  `request` is doing real work; don't remove it.
 - **`request`'s body is wrapped in `try` + `(catch Throwable e ...
   e)`.** core.async's ioc-macro exception routing leaks when a
   continuation runs on a hato HTTP worker thread; returning the
@@ -140,10 +141,10 @@ refactor, read the integration doc first.
   author. The caller POSTs in that case, which is safe but slow.
 - **Cover images do not go through Chaptarr.** The fork prefers
   the resolved row's absolute CDN URL and falls back to OpenLibrary
-  (by ISBN) or Amazon (by ASIN). Deliberately avoids any design
-  that would require exposing Chaptarr publicly — a previous
-  iteration required a `CHAPTARR__PUBLIC_URL`, which was correctly
-  identified as an unreasonable ask of operators whose Chaptarr
-  lives on an internal network. If a refactor reintroduces a
+  (by ISBN) or Amazon (by ASIN). The fork deliberately avoids any
+  design that would require exposing Chaptarr publicly. A previous
+  iteration required a `CHAPTARR__PUBLIC_URL`, and operators
+  whose Chaptarr lives on an internal network shouldn't have to
+  expose it just for cover art. If a refactor reintroduces a
   Chaptarr-hosted cover path, the public-URL requirement comes
   back with it.

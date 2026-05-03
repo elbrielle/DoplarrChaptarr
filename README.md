@@ -1,9 +1,9 @@
 # DoplarrChaptarr
 
-A fork of [Kiran Shila's Doplarr](https://github.com/kiranshila/Doplarr) that adds **[Chaptarr](https://github.com/robertlordhood/chaptarr)** support. Chaptarr is a Readarr fork that manages both ebooks and audiobooks from one backend. This fork registers two new Discord slash subcommands:
+A fork of [Kiran Shila's Doplarr](https://github.com/kiranshila/Doplarr) that adds [Chaptarr](https://github.com/robertlordhood/chaptarr) support. Chaptarr is a Readarr fork that manages both ebooks and audiobooks from one backend. This fork registers two new Discord slash subcommands:
 
-- `/request book` — request an ebook
-- `/request audiobook` — request an audiobook
+- `/request book` (ebook)
+- `/request audiobook`
 
 Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / Radarr / Overseerr backends) continues to work unchanged.
 
@@ -16,14 +16,14 @@ Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / 
   metadata profiles, so requests usually skip the dropdowns.
 - Cross-format requests (asking for an audiobook when you already
   have the ebook, or vice versa) flip the correct monitor flag and
-  fire a fresh indexer search rather than 409-ing on duplicate IDs.
-- Author adds only monitor the specific requested book — Chaptarr
-  doesn't pull in the author's whole back catalogue.
+  fire a fresh indexer search instead of 409-ing on duplicate IDs.
+- Adding an author only monitors the specific book that was just
+  requested. Chaptarr won't pull in the rest of the back catalogue.
 - Cover images on confirmation embeds attempt public CDN sources
   (Hardcover, Amazon, Goodreads) with OpenLibrary-by-ISBN and
-  Amazon-by-ASIN fallbacks, so there's no need to expose your
-  Chaptarr instance publicly. Currently inconsistent — see
-  [Known issues](#known-issues) below.
+  Amazon-by-ASIN fallbacks, so you don't need to expose your
+  Chaptarr instance publicly. Currently inconsistent; see
+  [Known issues](#known-issues).
 
 If you're deploying this image, read
 [`docs/CHAPTARR_INTEGRATION.md`](docs/CHAPTARR_INTEGRATION.md) for
@@ -57,8 +57,8 @@ CHAPTARR__API=<your chaptarr api key from Settings → General>
 `CHAPTARR__URL` only needs to be reachable from Doplarr's container;
 it can stay on an internal Docker network. Cover images on Discord
 embeds are pulled from public CDNs rather than from Chaptarr, so
-there's no need to expose Chaptarr to the public internet. (Cover
-attachment itself is currently inconsistent — see
+you don't need to expose Chaptarr to the public internet. (Cover
+attachment itself is currently inconsistent; see
 [Known issues](#known-issues).)
 
 Recommended (so requests skip the root-folder and quality-profile dropdowns):
@@ -91,11 +91,11 @@ doplarr:
     - mediaserver
 ```
 
-The container needs outbound access to Discord and HTTP access to Chaptarr. No volume mounts required — Doplarr doesn't touch local disk.
+The container needs outbound access to Discord and HTTP access to Chaptarr. No volume mounts are required; Doplarr doesn't touch local disk.
 
 ### 4. Register the Discord bot
 
-Follow the Discord bot setup section of [docs/configuration.md](docs/configuration.md) — create an application, enable `bot` + `applications.commands` scopes, and authorize it to your server. You can reuse an existing Doplarr bot; nothing about the bot registration changes in this fork.
+Follow the Discord bot setup section of [docs/configuration.md](docs/configuration.md): create an application, enable `bot` and `applications.commands` scopes, and authorize it to your server. You can reuse an existing Doplarr bot; nothing about the bot registration changes in this fork.
 
 ## Verify
 
@@ -118,7 +118,7 @@ A result dropdown should appear. Select a result and the bot walks you through a
 
 ## Known issues
 
-- **Cover images on confirmation embeds are unreliable.** Even for popular books with clean ISBN/ASIN data, the embed sometimes shows up without a cover. The CDN-sourcing path is on the fix list — see [CHANGELOG.md](CHANGELOG.md) for what's tried so far.
+- **Cover images on confirmation embeds are unreliable.** Even for popular books with clean ISBN/ASIN data, the embed sometimes shows up without a cover. The CDN-sourcing path is on the fix list; see [CHANGELOG.md](CHANGELOG.md) for what's been tried so far.
 
 ## Merging upstream Doplarr releases
 
@@ -129,12 +129,12 @@ git fetch upstream
 git merge upstream/main
 ```
 
-All modifications in this fork are purely additive insertions into a small set of upstream files — conflicts during merge should be mechanical. [FORK_NOTES.md](FORK_NOTES.md) documents each modification block and where to re-apply it if the upstream surface shifts.
+All modifications in this fork are purely additive insertions into a small set of upstream files, so conflicts during merge should be mechanical. [FORK_NOTES.md](FORK_NOTES.md) documents each modification block and where to re-apply it if the upstream surface shifts.
 
 ## Credits
 
-- [kiranshila/Doplarr](https://github.com/kiranshila/Doplarr) — all of Doplarr's architecture, Discord wiring, and backend patterns. This fork only adds the Chaptarr backend.
-- [robertlordhood/chaptarr](https://github.com/robertlordhood/chaptarr) — the book manager being integrated.
+- [kiranshila/Doplarr](https://github.com/kiranshila/Doplarr) provides all of Doplarr's architecture, Discord wiring, and backend patterns. This fork only adds the Chaptarr backend.
+- [robertlordhood/chaptarr](https://github.com/robertlordhood/chaptarr) is the book manager being integrated.
 
 ## License
 

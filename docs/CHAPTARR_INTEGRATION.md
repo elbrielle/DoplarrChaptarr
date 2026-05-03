@@ -7,8 +7,8 @@ backend). This document covers what's needed on the Chaptarr side,
 the environment variables the fork reads, and the Chaptarr quirks
 that shaped the integration.
 
-The rest of Doplarr's behaviour — Sonarr, Radarr, Overseerr,
-Discord registration, etc. — is untouched.
+The rest of Doplarr's behaviour (Sonarr, Radarr, Overseerr, Discord
+registration, and so on) is untouched.
 
 ## Chaptarr-side setup
 
@@ -39,7 +39,7 @@ CHAPTARR__API=<api key>
 ```
 
 `CHAPTARR__URL` only needs to be reachable from the Doplarr
-container. No publicly-exposed hostname is required — covers on
+container. No publicly-exposed hostname is required: covers on
 Discord embeds come from public CDNs (see "Cover URLs" below), so
 Chaptarr can stay entirely on your internal network.
 
@@ -72,10 +72,11 @@ internalising before reading the code.
   `audiobook-metadata-profile-id`) have to be on the POST body,
   even though the request only cares about one format. The
   singular `qualityProfileId` / `metadataProfileId` fields are
-  silently ignored.
+  ignored without an error.
 - Every piece of metadata refresh is author-level. There is no
-  reliable per-book refresh — `RefreshBook` throws errors in
-  community reports; `RefreshAuthor` is the working unstick path.
+  reliable per-book refresh: `RefreshBook` throws errors in
+  community reports, and `RefreshAuthor` is the working unstick
+  path.
 
 ### The book catalogue is a mix of resolved rows and placeholders
 
@@ -95,16 +96,16 @@ Resolved rows have a real `foreignEditionId` (`gr:...`, `hc:...`,
 
 Placeholders can persist permanently if the upstream metadata
 source never returns an edition for that work. Chaptarr also
-silently drops monitor-flag PUTs against placeholder rows, so the
-fork re-fires a `RefreshAuthor` and re-picks before monitoring —
-see the Ranker section below.
+drops monitor-flag PUTs against placeholder rows without any error,
+so the fork re-fires a `RefreshAuthor` and re-picks before
+monitoring (see the Ranker section below).
 
 ### Provider namespaces drift
 
 Lookup results carry `foreignAuthorId` in the provider namespace
 used by the external metadata lookup (e.g. `gr:38550` from
 Goodreads). After import, Chaptarr often normalises authors to
-Hardcover (`hc:...`) — but not always, and the numeric IDs don't
+Hardcover (`hc:...`), but not always, and the numeric IDs don't
 share a namespace across providers (Brandon Sanderson is
 `gr:38550` in Goodreads and `hc:204214` in Hardcover). Edition
 rows can end up under any of `gr:`, `hc:`, or `az:` depending on
@@ -112,30 +113,30 @@ which source materialised them first.
 
 This is why `find-existing-author` tries `foreignAuthorId`
 equality first and falls back to normalised author-name on a
-single match — the only reliable bridge when provider IDs don't
-agree.
+single match. It's the only reliable bridge when provider IDs
+don't agree.
 
 ### Monitor flags have a two-tier gate
 
-Per-book monitoring requires **both**:
+Per-book monitoring requires both:
 
 1. The book row's `ebookMonitored` / `audiobookMonitored` flag set.
 2. The author's `ebookMonitorFuture` / `audiobookMonitorFuture`
    flag set.
 
-If (2) is false, Chaptarr silently drops (1) on write and logs
-"author is not monitored for ebooks" server-side. The fork's
+If (2) is false, the write to (1) is dropped without an error, and
+the server logs "author is not monitored for ebooks". The fork's
 `ensure-author-enabled-for-format` flips the author-level flag
 before attempting the per-book PUT on any cross-format re-request.
 
 ### Two monitor endpoints, only one works
 
 `PUT /api/v1/book/{id}` with a monitor-flag-flipped body returns
-2xx but silently drops the flag change. The bulk
-`PUT /api/v1/book/monitor` with `{bookIds, monitored}` actually
-lands and returns 202 Accepted. The response body doesn't include
-the updated record, so the fork re-GETs `/book/{id}` to verify
-the flip.
+2xx but doesn't actually persist the flag change. The bulk
+`PUT /api/v1/book/monitor` with `{bookIds, monitored}` lands and
+returns 202 Accepted. The response body doesn't include the
+updated record, so the fork re-GETs `/book/{id}` to verify the
+flip.
 
 ### Chaptarr feeds the row's title to the indexer verbatim
 
@@ -144,14 +145,14 @@ selected row's title. A row titled *"The Trial by Franz Kafka: A
 Masterpiece of Modern Literature Exploring Power, Bureaucracy, and
 Existential Struggle (Grapevine Edition)"* produces an indexer
 query that matches no actual release. This is why the ranker
-prefers shorter titles within tier — the fork can't reshape the
+prefers shorter titles within tier: the fork can't reshape the
 search, but it can pick a row that searches better.
 
 ### Cover URLs come from public CDNs, not Chaptarr
 
 Chaptarr's lookup endpoint returns relative `/MediaCoverProxy/...`
 paths that are only reachable inside whatever network Chaptarr
-is on — often with Plex auth in front of them. Rather than ask
+is on, often with Plex auth in front of them. Rather than ask
 operators to expose their Chaptarr publicly so Discord can fetch
 covers, the fork sources covers from public book-metadata CDNs:
 
@@ -171,18 +172,18 @@ covers, the fork sources covers from public book-metadata CDNs:
    `https://images-na.ssl-images-amazon.com/images/P/<asin>.jpg`.
 
 If none of the three yield a URL the confirmation embed renders
-without an image. The request flow itself is never affected — the
+without an image. The request flow itself is never affected; the
 monitor PUT and indexer search happen against Chaptarr regardless
 of whether a cover came through.
 
 POST still runs at embed-render time (not at Request-click) so
-`(1)` has the best chance of firing — the resolved row is the one
+`(1)` has the best chance of firing. The resolved row is the one
 that carries those absolute CDN URLs.
 
 ## Ranker design
 
-Multiple rows under one author for one format is the norm — one
-row per edition/language. Selecting the right row matters because
+Multiple rows under one author for one format is the norm; one row
+per edition/language. Selecting the right row matters because
 Chaptarr feeds the row's title to the indexer. The ranker lives
 in `impl/preferred-book-for-format` and works in two phases.
 
@@ -190,10 +191,10 @@ in `impl/preferred-book-for-format` and works in two phases.
 
 1. **Exact match** after title normalisation (lowercase, strip
    Unicode punctuation, collapse whitespace).
-2. **Substring match** either direction — handles subtitled
+2. **Substring match** either direction; handles subtitled
    editions ("The Women: A Novel" vs requested "The Women").
-3. **No title match** — fall back to all format-matching rows and
-   pick by completeness + popularity. Warns in logs.
+3. **No title match.** Fall back to all format-matching rows and
+   pick by completeness plus popularity. Warns in logs.
 
 Exact beats substring even when the exact match is a placeholder.
 This is deliberate: Chaptarr's `BookSearch` uses the row's title
@@ -214,8 +215,8 @@ indexer.
 5. `releaseDate` (newer wins)
 
 Every selection emits a single log line with the tier, candidate
-counts, and the winner's scoring components — enough to diagnose
-"why did we pick that row?" without re-running.
+counts, and the winner's scoring components. That's enough to
+diagnose "why did we pick that row?" without re-running.
 
 ## Request flow
 
@@ -254,7 +255,7 @@ What this fork explicitly doesn't fix:
 
 - **Chaptarr's indexer matcher is strict.** If Chaptarr rejects a
   legitimate release with `RejectionReason: Title/Author mismatch`,
-  no row selection will help. Remedy is Chaptarr-side release
+  no row selection will help. The remedy is Chaptarr-side release
   profile / preferred-word configuration.
 - **Upstream metadata gaps.** If Hardcover / Goodreads / Amazon
   don't carry an edition for a requested work, `RefreshAuthor`
@@ -262,9 +263,9 @@ What this fork explicitly doesn't fix:
   placeholder-unresolved message.
 - **Duplicate placeholder rows.** Chaptarr sometimes mints a
   second placeholder on a retry rather than reusing the existing
-  one. The fork doesn't reap these — they can pile up under an
-  author and are harmless but noisy. Operator can delete them via
-  the Chaptarr UI if desired.
+  one. The fork doesn't reap these. They can pile up under an
+  author and are harmless but noisy. The operator can delete them
+  via the Chaptarr UI if desired.
 - **Rapid double-tap race.** If a user double-taps Request fast
   enough that the second click's interaction arrives before the
   progress-message edit lands on Discord's side, both clicks run
@@ -285,8 +286,8 @@ which row the ranker picked and why, and what happened at the
 request layer.
 
 When a request produces "Request performed!" in Discord but no
-grab follows, the question lives in Chaptarr's own logs, not
-Doplarr's — specifically `ReleaseSearchService`,
+grab follows, the question lives in Chaptarr's own logs rather
+than Doplarr's. Look at `ReleaseSearchService`,
 `DownloadDecisionMaker`, and any `Rejection` lines near the
 timestamp of the fork's `monitoring book N` entry. Those show
 what Chaptarr searched for and why each returned release was
