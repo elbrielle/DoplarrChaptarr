@@ -7,7 +7,7 @@ Format roughly follows [Keep a Changelog](https://keepachangelog.com/). Version 
 ## [Unreleased]
 
 ### Changed
-- Cover images on Discord confirmation embeds now come from the resolved book's public CDN URL (Hardcover, Amazon, or Goodreads), with an OpenLibrary-by-ISBN or Amazon-by-ASIN fallback. The previous multipart proxy through Chaptarr is gone, so `CHAPTARR__PUBLIC_URL` is no longer needed and Chaptarr can stay on an internal network.
+- Reworked cover sourcing away from a multipart proxy through Chaptarr, so `CHAPTARR__PUBLIC_URL` is no longer required and Chaptarr can stay on an internal network. Cover attachment via public CDNs (Hardcover, Amazon, Goodreads) with OpenLibrary-by-ISBN and Amazon-by-ASIN fallbacks is in place but currently inconsistent — see Known issues in the README.
 
 ### Fixed
 - Decode JSON API responses so non-string fields render correctly in confirmations.

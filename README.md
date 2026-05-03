@@ -19,10 +19,11 @@ Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / 
   fire a fresh indexer search rather than 409-ing on duplicate IDs.
 - Author adds only monitor the specific requested book — Chaptarr
   doesn't pull in the author's whole back catalogue.
-- Cover images on confirmation embeds come from the resolved book's
-  upstream CDN URL (Hardcover / Amazon / Goodreads) with an
-  OpenLibrary-ISBN / Amazon-ASIN fallback — no need to expose your
-  Chaptarr instance publicly.
+- Cover images on confirmation embeds attempt public CDN sources
+  (Hardcover, Amazon, Goodreads) with OpenLibrary-by-ISBN and
+  Amazon-by-ASIN fallbacks, so there's no need to expose your
+  Chaptarr instance publicly. Currently inconsistent — see
+  [Known issues](#known-issues) below.
 
 If you're deploying this image, read
 [`docs/CHAPTARR_INTEGRATION.md`](docs/CHAPTARR_INTEGRATION.md) for
@@ -54,9 +55,11 @@ CHAPTARR__API=<your chaptarr api key from Settings → General>
 ```
 
 `CHAPTARR__URL` only needs to be reachable from Doplarr's container;
-it can stay on an internal Docker network. Covers on Discord
-confirmation embeds are sourced from public CDNs (see README note
-above), so there's no need to expose Chaptarr to the public internet.
+it can stay on an internal Docker network. Cover images on Discord
+embeds are pulled from public CDNs rather than from Chaptarr, so
+there's no need to expose Chaptarr to the public internet. (Cover
+attachment itself is currently inconsistent — see
+[Known issues](#known-issues).)
 
 Recommended (so requests skip the root-folder and quality-profile dropdowns):
 
@@ -112,6 +115,10 @@ Then in Discord:
 ```
 
 A result dropdown should appear. Select a result and the bot walks you through any un-defaulted options, then confirms the request. It should land in Chaptarr's queue and flow through your configured download client.
+
+## Known issues
+
+- **Cover images on confirmation embeds are unreliable.** Even for popular books with clean ISBN/ASIN data, the embed sometimes shows up without a cover. The CDN-sourcing path is on the fix list — see [CHANGELOG.md](CHANGELOG.md) for what's tried so far.
 
 ## Merging upstream Doplarr releases
 
