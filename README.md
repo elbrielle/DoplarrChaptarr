@@ -7,6 +7,8 @@ A fork of [Kiran Shila's Doplarr](https://github.com/kiranshila/Doplarr) that ad
 
 Everything upstream Doplarr does (`/request movie`, `/request series`, Sonarr / Radarr / Overseerr backends) continues to work unchanged.
 
+> A personal fork I run on my own server. Chaptarr is still pre-1.0 and ships changes regularly, so something here may break when Chaptarr or upstream Doplarr updates. File an issue if it does. See [CHANGELOG.md](CHANGELOG.md) for what's in each tag.
+
 ## What this fork adds
 
 - Chaptarr backend on the Readarr-v1-compatible API.
